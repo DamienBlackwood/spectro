@@ -1,0 +1,61 @@
+SPECTROGRAM GENERATOR - QUICK USAGE GUIDE
+=========================================
+
+BASIC USAGE:
+python spectrogram.py audio_file.mp3
+python spectrogram.py "My Song.flac" -o output_name.png
+
+SPEED MODES (for faster processing):
+--fast           # General speed optimizations
+--preview        # Low DPI, fast rendering for quick previews  
+--emergency      # Maximum speed, sacrifices quality
+--bypass-matplotlib # Direct image generation (fastest)
+
+OUTPUT OPTIONS:
+-o filename      # Custom output filename
+--format pdf     # Output format: png/pdf/svg (PDF is 5-10x faster than PNG)
+--dpi 150        # Image quality: 72=draft, 150=good, 300=high (lower=faster)
+--no-display    # Don't show the spectrogram window
+
+DISPLAY OPTIONS:
+--log           # Use logarithmic frequency scale (better for music)
+--quality draft # Quality presets: draft/normal/high
+--info          # Show detailed audio file information
+
+THREADING:
+--threads 4     # Number of threads (0=auto-detect)
+
+ANNOTATIONS:
+--annotations file.json  # Add markers/labels to the spectrogram
+
+COMMON EXAMPLES:
+# Quick preview of a song
+python spectrogram.py song.mp3 --preview --no-display
+
+# High-quality output  
+python spectrogram.py song.flac --quality high --log
+
+# Fast processing for large files
+python spectrogram.py long_audio.wav --fast --format pdf --dpi 150
+
+# Emergency mode for immediate results
+python spectrogram.py audio.mp3 --emergency
+
+# Show all available options
+python spectrogram.py --hotkeys
+
+FILE ORGANIZATION:
+- Input files: Place in 'inputs/' folder (optional)
+- Output spectrograms: Automatically saved to 'outputs/spectrograms/'
+- Performance data: Stored in 'outputs/performance_data/'
+- Temporary files: 'outputs/temp/'
+
+PERFORMANCE TIPS:
+- For large files (>50MB or >5min): use --fast or --preview
+- PDF format is 5-10x faster than PNG for saving
+- Lower DPI (150 vs 300) speeds up processing 3-5x
+- --bypass-matplotlib is fastest for basic spectrograms
+- --emergency mode provides maximum speed with acceptable quality
+
+The tool automatically optimizes settings and provides time estimates.
+Output filenames are automatically generated from song metadata when available.
