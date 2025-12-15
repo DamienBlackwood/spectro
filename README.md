@@ -2,15 +2,28 @@
 
 Small Python tool to generate spectrograms + (optional) do a heuristic “lossy source” check.
 
-It makes pictures. It does **not** prove provenance, codec, or bitrate.
+It makes pictures. It does **not** prove provenance, original sample rate, codec history, or bitrate.
 
 ## Install
+
 
 Python 3.9+ recommended.
 
 ```bash
 pip install numpy soundfile scipy matplotlib
 ```
+
+### Optional (recommended): FFmpeg / ffprobe
+
+Some workflows benefit from cross-checking container metadata (codec, sample rate, bit depth).
+
+Install FFmpeg system-wide (includes `ffprobe`):
+
+- macOS (Homebrew): `brew install ffmpeg`
+- Ubuntu/Debian: `sudo apt install ffmpeg`
+- Windows: download static build and add `bin/` to PATH
+
+Note: `ffprobe` is a system binary and does not install into a Python virtual environment.
 
 ## Usage
 
@@ -60,7 +73,7 @@ Common flags:
 
 - default (fast): caps sample rate at 44.1k when needed, smaller FFT, lower DPI, saves PDF by default
 - `--quality`: no downsampling, bigger FFT + overlap, higher DPI, saves PNG by default
-- `--detect`: estimates cutoff + shelf behavior and prints the closest matching profile (heuristic), then saves a 1-page analysis PDF
+- `--detect`: estimates cutoff + shelf behavior and reports the closest matching profile (heuristic); absence of a cutoff does not imply native hi-res; saves a 1-page analysis PDF
 - `--compare`: time-aligns two files, computes similarity %, and renders A, B, and difference spectrograms
 
 ## Output
@@ -82,5 +95,9 @@ Naming defaults:
 - a clean horizontal cutoff is a strong hint of lossy processing
 - no cutoff detected ≠ guaranteed lossless
 - all results are probabilistic; false positives and negatives are expected
+- “likely lossless” means “no obvious lossy low-pass or shelf detected”
+- bandwidth-limited material (e.g. ~20–22 kHz) inside a higher sample-rate container is common
+- absence of ultrasonic energy does **not** imply fakery or lossy transcoding
+- classic and archival recordings often show this pattern even when transfers are legitimate
 
 That’s it.

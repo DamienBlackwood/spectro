@@ -57,16 +57,33 @@ def detect_codec(data, sr):
     from scipy.ndimage import gaussian_filter1d
     
     nperseg = 8192
-    frequencies, times, Zxx = stft(data, fs=sr, nperseg=nperseg, noverlap=nperseg*3//4, window='hann')
+    noverlap = nperseg * 3 // 4
+    
+    frequencies, times, Zxx = stft(data, fs=sr, nperseg=nperseg, noverlap=noverlap, window='hann')
     power = np.abs(Zxx) ** 2
     avg_spectrum = np.mean(power, axis=1)
     avg_db = 10 * np.log10(avg_spectrum + 1e-10)
+    
+    # decimations
+    time_decim = max(1, Zxx.shape[1] // 2000)
+    Sxx_db = 10 * np.log10(np.abs(Zxx[:, ::time_decim]) ** 2 + 1e-10)
+    times_decim = times[::time_decim]
+    del Zxx, power
     
     smoothed = gaussian_filter1d(avg_db, sigma=3)
     gradient = np.gradient(smoothed)
     second_deriv = np.gradient(gradient)
     
     noise_floor = np.percentile(avg_db, 5)
+    
+    ultrasonic_energy = None
+    ultrasonic_delta = None
+    if sr > 48000:
+        idx_24k = np.argmin(np.abs(frequencies - 24000))
+        
+        ultrasonic_peak = np.max(avg_db[idx_24k:])
+        ultrasonic_energy = ultrasonic_peak
+        ultrasonic_delta = ultrasonic_peak - noise_floor
     
     nyquist = sr / 2
     search_start_idx = np.argmin(np.abs(frequencies - 12000))
@@ -140,6 +157,9 @@ def detect_codec(data, sr):
     if sr > 48000 and cutoff_freq < 20000 and drop_detected:
         is_transcode = True
         transcode_warning = f"High sample rate ({sr}Hz) but cutoff at {cutoff_freq:.0f}Hz - likely upsampled lossy"
+    elif sr > 48000 and ultrasonic_delta is not None and ultrasonic_delta < 20:
+        is_transcode = True
+        transcode_warning = f"No significant ultrasonic content - likely upsampled from 44.1/48kHz source"
     elif cutoff_freq < 14000 and drop_detected and not sbr_detected:
         is_transcode = True
         transcode_warning = f"Low cutoff ({cutoff_freq:.0f}Hz) suggests heavily compressed source"
@@ -188,12 +208,15 @@ def detect_codec(data, sr):
         'is_lossless': is_lossless,
         'is_transcode': is_transcode,
         'transcode_warning': transcode_warning,
+        'ultrasonic_energy': ultrasonic_energy,
+        'ultrasonic_delta': ultrasonic_delta,
+        'noise_floor': noise_floor,
         'scores': scores,
         'frequencies': frequencies,
-        'times': times,
-        'Zxx': Zxx,
+        'times': times_decim,
+        'Sxx_db': Sxx_db,
         'avg_spectrum_db': avg_db,
-        'gradient': gradient,
+        'nyquist': nyquist,
     }
 
 def fmt_time(s):
@@ -237,6 +260,19 @@ if args.info:
     sys.exit(0)
 
 if args.detect:
+    ffprobe_info = None
+    try:
+        import subprocess
+        result_probe = subprocess.run(
+            ['ffprobe', '-v', 'quiet', '-print_format', 'json', '-show_format', '-show_streams', file_path],
+            capture_output=True, text=True, timeout=5
+        )
+        if result_probe.returncode == 0:
+            import json
+            ffprobe_info = json.loads(result_probe.stdout)
+    except:
+        pass
+    
     print("[2/3] Analyzing codec signatures...")
     t0 = time.perf_counter()
     
@@ -259,8 +295,31 @@ if args.detect:
     print(f"  Shelf type:        {result['shelf_type']}")
     print(f"  SBR detected:      {'yes' if result['sbr_detected'] else 'no'}")
     
+    if result['ultrasonic_energy'] is not None:
+        delta = result['ultrasonic_delta']
+        if delta < 20:
+            status = "EMPTY/noise only"
+        elif delta < 35:
+            status = "minimal"
+        else:
+            status = "present"
+        print(f"  Ultrasonic (24k+): {delta:.1f} dB above noise ({status})")
+    
     if result['transcode_warning']:
         print(f"\n  ⚠ {result['transcode_warning']}")
+    
+    if ffprobe_info:
+        print(f"\n{'='*50}")
+        print("CONTAINER METADATA (ffprobe)")
+        print(f"{'='*50}")
+        for stream in ffprobe_info.get('streams', []):
+            if stream.get('codec_type') == 'audio':
+                print(f"  Codec:        {stream.get('codec_name', 'unknown')}")
+                print(f"  Sample rate:  {stream.get('sample_rate', 'unknown')} Hz")
+                print(f"  Bit depth:    {stream.get('bits_per_raw_sample', stream.get('bits_per_sample', 'unknown'))}")
+                print(f"  Channels:     {stream.get('channels', 'unknown')}")
+                if 'bit_rate' in stream:
+                    print(f"  Bitrate:      {int(stream['bit_rate'])//1000} kbps")
     
     print(f"{'='*50}")
     
@@ -280,9 +339,13 @@ if args.detect:
     
     freqs = result['frequencies']
     spectrum = result['avg_spectrum_db']
+    nyquist = result['nyquist']
     
     ax1.plot(freqs, spectrum, 'b-', linewidth=0.8, alpha=0.7, label='Spectrum')
     ax1.axvline(x=result['cutoff_freq'], color='r', linestyle='--', label=f"Cutoff: {result['cutoff_freq']:.0f} Hz")
+    if sr > 48000:
+        ax1.axvline(x=24000, color='g', linestyle=':', alpha=0.5, label='24 kHz')
+        ax1.axhline(y=result['noise_floor'], color='gray', linestyle=':', alpha=0.5, label='Noise floor')
     ax1.set_xlabel('Frequency (Hz)')
     ax1.set_ylabel('Power (dB)')
     
@@ -295,16 +358,17 @@ if args.detect:
     ax1.set_title(title)
     ax1.legend()
     ax1.grid(True, alpha=0.3)
-    ax1.set_xlim(0, min(24000, sr/2))
+    ax1.set_xlim(0, nyquist)
     
-    Sxx_db = 10 * np.log10(np.abs(result['Zxx']) ** 2 + 1e-10)
     extent = [result['times'][0], result['times'][-1], freqs[0], freqs[-1]]
-    im = ax2.imshow(Sxx_db, aspect='auto', origin='lower', extent=extent, cmap='inferno', interpolation='bilinear')
+    im = ax2.imshow(result['Sxx_db'], aspect='auto', origin='lower', extent=extent, cmap='inferno', interpolation='bilinear')
     ax2.axhline(y=result['cutoff_freq'], color='white', linestyle='--', alpha=0.7)
+    if sr > 48000:
+        ax2.axhline(y=24000, color='green', linestyle=':', alpha=0.5)
     ax2.set_xlabel('Time (s)')
     ax2.set_ylabel('Frequency (Hz)')
     ax2.set_title('Spectrogram')
-    ax2.set_ylim(0, min(24000, sr/2))
+    ax2.set_ylim(0, nyquist)
     plt.colorbar(im, ax=ax2, label='dB')
     
     plt.tight_layout()
@@ -366,13 +430,17 @@ if args.compare:
     nperseg = 2048
     noverlap = 1536
     
-    _, times, Zxx1 = stft(data, fs=sr, nperseg=nperseg, noverlap=noverlap)
-    frequencies, _, Zxx2 = stft(data2, fs=sr, nperseg=nperseg, noverlap=noverlap)
-    _, _, Zxx_diff = stft(diff, fs=sr, nperseg=nperseg, noverlap=noverlap)
+    frequencies, times, Z1 = stft(data, fs=sr, nperseg=nperseg, noverlap=noverlap)
+    _, _, Z2 = stft(data2, fs=sr, nperseg=nperseg, noverlap=noverlap)
+    _, _, Zd = stft(diff, fs=sr, nperseg=nperseg, noverlap=noverlap)
     
-    S1_db = 10 * np.log10(np.abs(Zxx1)**2 + 1e-10)
-    S2_db = 10 * np.log10(np.abs(Zxx2)**2 + 1e-10)
-    Sdiff_db = 10 * np.log10(np.abs(Zxx_diff)**2 + 1e-10)
+    time_decim = max(1, Z1.shape[1] // 2000)
+    S1_db = 10 * np.log10(np.abs(Z1[:, ::time_decim])**2 + 1e-10)
+    S2_db = 10 * np.log10(np.abs(Z2[:, ::time_decim])**2 + 1e-10)
+    Sdiff_db = 10 * np.log10(np.abs(Zd[:, ::time_decim])**2 + 1e-10)
+    times = times[::time_decim]
+    
+    del Z1, Z2, Zd, data, data2, diff
     
     stft_time = time.perf_counter() - t0
     print(f"      Done ({fmt_time(stft_time)})")
@@ -452,20 +520,22 @@ t0 = time.perf_counter()
 
 from scipy.signal import stft
 noverlap = int(NPERSEG * OVERLAP)
+
+target_time_bins = 4000
+hop = NPERSEG - noverlap
+total_frames = len(data) // hop
+time_decimation = max(1, total_frames // target_time_bins)
+
 frequencies, times, Zxx = stft(data, fs=sr, nperseg=NPERSEG, noverlap=noverlap, window='hann')
 
-Sxx_db = 10 * np.log10(np.abs(Zxx) ** 2 + 1e-10)
+# conversion then ERADICATE!!!! to save memory lol
+Sxx_db = 10 * np.log10(np.abs(Zxx[:, ::time_decimation]) ** 2 + 1e-10)
+times = times[::time_decimation]
+del Zxx, data
+
 stft_time = time.perf_counter() - t0
 
 print(f"      {Sxx_db.shape[0]}x{Sxx_db.shape[1]} bins, {sr/NPERSEG:.1f} Hz res ({fmt_time(stft_time)})")
-
-if MAX_TIME_BINS or MAX_FREQ_BINS:
-    orig_shape = Sxx_db.shape
-    Sxx_db, rf, cf = decimate_2d(Sxx_db, MAX_FREQ_BINS, MAX_TIME_BINS)
-    if rf > 1 or cf > 1:
-        frequencies = frequencies[::rf]
-        times = times[::cf]
-        print(f"      Decimated to {Sxx_db.shape[0]}x{Sxx_db.shape[1]} for display")
 
 print("[4/4] Rendering...")
 t0 = time.perf_counter()
