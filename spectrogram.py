@@ -13,6 +13,7 @@ parser = argparse.ArgumentParser(description="Spectrogram Generator")
 parser.add_argument("file_path", nargs="?", help="Input audio file")
 parser.add_argument("-o", "--output", help="Output filename")
 parser.add_argument("--detect", action="store_true", help="Codec detection mode")
+parser.add_argument("--compare", metavar="FILE", help="Compare with another file")
 parser.add_argument("--quality", action="store_true", help="Full quality mode (slower)")
 parser.add_argument("--log", action="store_true", help="Log frequency axis")
 parser.add_argument("--no-display", action="store_true", help="Don't show plot")
@@ -48,90 +49,118 @@ CODEC_PROFILES = {
     'he_aac': {'cutoff': (13000, 15000), 'sbr': True, 'shelf': 'soft'},
     'opus_128': {'cutoff': (19000, 20500), 'sbr': False, 'shelf': 'soft'},
     'vorbis_128': {'cutoff': (15500, 17000), 'sbr': False, 'shelf': 'medium'},
+    'lossless': {'cutoff': (21000, 48000), 'sbr': False, 'shelf': 'none'},
 }
 
 def detect_codec(data, sr):
     from scipy.signal import stft
+    from scipy.ndimage import gaussian_filter1d
     
-    frequencies, times, Zxx = stft(data, fs=sr, nperseg=8192, noverlap=6144, window='hann')
+    nperseg = 8192
+    frequencies, times, Zxx = stft(data, fs=sr, nperseg=nperseg, noverlap=nperseg*3//4, window='hann')
     power = np.abs(Zxx) ** 2
     avg_spectrum = np.mean(power, axis=1)
     avg_db = 10 * np.log10(avg_spectrum + 1e-10)
     
-    noise_floor = np.percentile(avg_db, 10)
-    peak_level = np.max(avg_db)
-    threshold = noise_floor + (peak_level - noise_floor) * 0.1
+    smoothed = gaussian_filter1d(avg_db, sigma=3)
+    gradient = np.gradient(smoothed)
+    second_deriv = np.gradient(gradient)
     
-    cutoff_freq = None
-    for i in range(len(frequencies) - 1, 0, -1):
-        if avg_db[i] > threshold:
-            cutoff_freq = frequencies[i]
-            break
+    noise_floor = np.percentile(avg_db, 5)
     
-    if cutoff_freq is None:
-        cutoff_freq = frequencies[-1]
+    nyquist = sr / 2
+    search_start_idx = np.argmin(np.abs(frequencies - 12000))
+    search_end_idx = np.argmin(np.abs(frequencies - min(22000, nyquist * 0.95)))
     
-    cutoff_idx = np.argmin(np.abs(frequencies - cutoff_freq))
+    cutoff_freq = nyquist
+    cutoff_idx = len(frequencies) - 1
+    shelf_type = 'none'
+    drop_detected = False
     
-    if cutoff_idx > 100:
-        far_below = avg_db[cutoff_idx-100:cutoff_idx-50]
-        near_cutoff = avg_db[cutoff_idx-20:cutoff_idx]
-        at_cutoff = avg_db[cutoff_idx:cutoff_idx+20] if cutoff_idx+20 < len(avg_db) else avg_db[cutoff_idx:]
+    if search_end_idx > search_start_idx:
+        search_gradient = gradient[search_start_idx:search_end_idx]
+        search_second = second_deriv[search_start_idx:search_end_idx]
+        search_spectrum = smoothed[search_start_idx:search_end_idx]
         
-        if len(far_below) > 0 and len(near_cutoff) > 0 and len(at_cutoff) > 0:
-            gradual_drop = np.mean(far_below) - np.mean(near_cutoff)
-            sudden_drop = np.mean(near_cutoff) - np.mean(at_cutoff)
-            
-            if sudden_drop > 15:
-                shelf_type = 'hard'
-            elif sudden_drop > 8:
-                shelf_type = 'medium'
-            elif sudden_drop > 3 or gradual_drop > 10:
-                shelf_type = 'soft'
-            else:
+        baseline_grad = np.median(gradient[search_start_idx//2:search_start_idx])
+        
+        threshold = baseline_grad - 1.5
+        
+        for i in range(len(search_gradient)):
+            if search_gradient[i] < threshold and search_spectrum[i] > noise_floor + 10:
+                window_start = max(0, i - 5)
+                window_end = min(len(search_gradient), i + 10)
+                local_drop = np.min(search_gradient[window_start:window_end])
+                
+                if local_drop < -1.0:
+                    cutoff_idx = search_start_idx + i
+                    cutoff_freq = frequencies[cutoff_idx]
+                    drop_detected = True
+                    
+                    if local_drop < -3:
+                        shelf_type = 'hard'
+                    elif local_drop < -1.5:
+                        shelf_type = 'medium'
+                    else:
+                        shelf_type = 'soft'
+                    break
+        
+        if not drop_detected:
+            end_energy = np.mean(smoothed[-20:])
+            mid_energy = np.mean(smoothed[search_start_idx:search_start_idx+20])
+            if end_energy > noise_floor + 5 and (mid_energy - end_energy) < 20:
+                cutoff_freq = nyquist
                 shelf_type = 'none'
-        else:
-            shelf_type = 'none'
-    else:
-        shelf_type = 'none'
     
     sbr_detected = False
     if cutoff_freq < 16000 and cutoff_idx < len(frequencies) - 50:
-        below_region = avg_db[max(0, cutoff_idx-80):cutoff_idx-20]
-        above_region = avg_db[cutoff_idx+20:min(len(avg_db), cutoff_idx+80)]
+        below_start = max(0, cutoff_idx - 80)
+        below_end = cutoff_idx - 20
+        above_start = cutoff_idx + 20
+        above_end = min(len(avg_db), cutoff_idx + 80)
         
-        if len(above_region) > 20 and len(below_region) > 20:
+        if below_end > below_start and above_end > above_start:
+            below_region = avg_db[below_start:below_end]
+            above_region = avg_db[above_start:above_end]
+            
             below_energy = np.mean(below_region)
             above_energy = np.mean(above_region)
-            energy_diff = below_energy - above_energy
             
-            if energy_diff < 15 and above_energy > noise_floor + 10:
+            if above_energy > noise_floor + 15 and (below_energy - above_energy) < 12:
                 min_len = min(len(below_region), len(above_region))
-                below_norm = below_region[:min_len] - np.mean(below_region[:min_len])
-                above_norm = above_region[:min_len] - np.mean(above_region[:min_len])
-                
-                if np.std(below_norm) > 0 and np.std(above_norm) > 0:
-                    correlation = np.corrcoef(below_norm, above_norm)[0, 1]
-                    if correlation > 0.6:
+                if min_len > 10:
+                    corr = np.corrcoef(below_region[:min_len], above_region[:min_len])[0, 1]
+                    if not np.isnan(corr) and corr > 0.5:
                         sbr_detected = True
+    
+    is_lossless = (cutoff_freq > nyquist * 0.9) and shelf_type == 'none'
+    is_transcode = False
+    transcode_warning = None
+    
+    if sr > 48000 and cutoff_freq < 20000 and drop_detected:
+        is_transcode = True
+        transcode_warning = f"High sample rate ({sr}Hz) but cutoff at {cutoff_freq:.0f}Hz - likely upsampled lossy"
+    elif cutoff_freq < 14000 and drop_detected and not sbr_detected:
+        is_transcode = True
+        transcode_warning = f"Low cutoff ({cutoff_freq:.0f}Hz) suggests heavily compressed source"
     
     scores = {}
     for codec, profile in CODEC_PROFILES.items():
         score = 0
-        
         low, high = profile['cutoff']
+        
         if low <= cutoff_freq <= high:
             score += 40
-        elif low - 1000 <= cutoff_freq <= high + 1000:
+        elif abs(cutoff_freq - (low + high) / 2) < 2000:
             score += 20
-        elif low - 2000 <= cutoff_freq <= high + 2000:
+        elif abs(cutoff_freq - (low + high) / 2) < 4000:
             score += 5
         
         if profile['shelf'] == shelf_type:
             score += 30
-        elif (profile['shelf'] in ['hard', 'medium'] and shelf_type in ['hard', 'medium']):
+        elif profile['shelf'] in ['hard', 'medium'] and shelf_type in ['hard', 'medium']:
             score += 15
-        elif (profile['shelf'] in ['soft', 'none'] and shelf_type in ['soft', 'none']):
+        elif profile['shelf'] in ['soft', 'none'] and shelf_type in ['soft', 'none']:
             score += 15
         
         if profile['sbr'] == sbr_detected:
@@ -156,9 +185,15 @@ def detect_codec(data, sr):
         'cutoff_freq': cutoff_freq,
         'shelf_type': shelf_type,
         'sbr_detected': sbr_detected,
+        'is_lossless': is_lossless,
+        'is_transcode': is_transcode,
+        'transcode_warning': transcode_warning,
         'scores': scores,
         'frequencies': frequencies,
+        'times': times,
+        'Zxx': Zxx,
         'avg_spectrum_db': avg_db,
+        'gradient': gradient,
     }
 
 def fmt_time(s):
@@ -209,16 +244,27 @@ if args.detect:
     detect_time = time.perf_counter() - t0
     
     print(f"\n{'='*50}")
-    print("LOSSY SOURCE ANALYSIS (HEURISTIC)")
+    print("CODEC ANALYSIS")
     print(f"{'='*50}")
-    print(f"  Closest profile:   {result['profile'].upper()}")
-    print(f"  Confidence level:  {result['confidence']} ({result['confidence_score']}/100)")
+    
+    if result['is_lossless']:
+        print(f"  Result:            LIKELY LOSSLESS")
+    elif result['is_transcode']:
+        print(f"  Result:            TRANSCODED/UPSAMPLED LOSSY")
+    else:
+        print(f"  Closest profile:   {result['profile'].upper()}")
+    
+    print(f"  Confidence:        {result['confidence']} ({result['confidence_score']}/100)")
     print(f"  Cutoff frequency:  {result['cutoff_freq']:.0f} Hz")
     print(f"  Shelf type:        {result['shelf_type']}")
     print(f"  SBR detected:      {'yes' if result['sbr_detected'] else 'no'}")
+    
+    if result['transcode_warning']:
+        print(f"\n  ⚠ {result['transcode_warning']}")
+    
     print(f"{'='*50}")
     
-    print("\nClosest matching profiles:")
+    print("\nProfile scores:")
     sorted_scores = sorted(result['scores'].items(), key=lambda x: x[1], reverse=True)[:5]
     for codec, score in sorted_scores:
         print(f"  {codec:15} {score:3}/100")
@@ -235,29 +281,29 @@ if args.detect:
     freqs = result['frequencies']
     spectrum = result['avg_spectrum_db']
     
-    ax1.plot(freqs, spectrum, 'b-', linewidth=0.8)
+    ax1.plot(freqs, spectrum, 'b-', linewidth=0.8, alpha=0.7, label='Spectrum')
     ax1.axvline(x=result['cutoff_freq'], color='r', linestyle='--', label=f"Cutoff: {result['cutoff_freq']:.0f} Hz")
     ax1.set_xlabel('Frequency (Hz)')
     ax1.set_ylabel('Power (dB)')
-    ax1.set_title(
-        f"Frequency Spectrum - Closest match: {result['profile'].upper()} "
-        f"({result['confidence']} confidence)"
-    )
+    
+    if result['is_lossless']:
+        title = "Frequency Spectrum - LIKELY LOSSLESS"
+    elif result['is_transcode']:
+        title = "Frequency Spectrum - TRANSCODED LOSSY SOURCE"
+    else:
+        title = f"Frequency Spectrum - Closest: {result['profile'].upper()} ({result['confidence']})"
+    ax1.set_title(title)
     ax1.legend()
     ax1.grid(True, alpha=0.3)
     ax1.set_xlim(0, min(24000, sr/2))
     
-    from scipy.signal import stft
-    frequencies, times, Zxx = stft(data, fs=sr, nperseg=2048, noverlap=1536, window='hann')
-    Sxx_db = 10 * np.log10(np.abs(Zxx) ** 2 + 1e-10)
-    
-    extent = [times[0], times[-1], frequencies[0], frequencies[-1]]
+    Sxx_db = 10 * np.log10(np.abs(result['Zxx']) ** 2 + 1e-10)
+    extent = [result['times'][0], result['times'][-1], freqs[0], freqs[-1]]
     im = ax2.imshow(Sxx_db, aspect='auto', origin='lower', extent=extent, cmap='inferno', interpolation='bilinear')
-    ax2.axhline(y=result['cutoff_freq'], color='white', linestyle='--', alpha=0.7, label=f"Cutoff: {result['cutoff_freq']:.0f} Hz")
+    ax2.axhline(y=result['cutoff_freq'], color='white', linestyle='--', alpha=0.7)
     ax2.set_xlabel('Time (s)')
     ax2.set_ylabel('Frequency (Hz)')
-    ax2.set_title('Spectrogram with inferred cutoff (heuristic)')
-    ax2.legend(loc='upper right')
+    ax2.set_title('Spectrogram')
     ax2.set_ylim(0, min(24000, sr/2))
     plt.colorbar(im, ax=ax2, label='dB')
     
@@ -267,7 +313,7 @@ if args.detect:
     if args.output:
         output_path = args.output
     else:
-        output_path = str(outputs_dir / f"{Path(file_path).stem}_codec_analysis.pdf")
+        output_path = str(outputs_dir / f"{Path(file_path).stem}_analysis.pdf")
     
     t0 = time.perf_counter()
     plt.savefig(output_path, dpi=150)
@@ -281,6 +327,102 @@ if args.detect:
     
     plt.close('all')
     
+    total = time.perf_counter() - script_start
+    print(f"\nDone in {fmt_time(total)}")
+    sys.exit(0)
+
+if args.compare:
+    if not os.path.isfile(args.compare):
+        print(f"Error: Comparison file not found: {args.compare}", file=sys.stderr)
+        sys.exit(1)
+    
+    print(f"[2/4] Loading comparison file...")
+    data2, sr2 = sf.read(args.compare, dtype='float32')
+    if data2.ndim > 1:
+        data2 = data2.mean(axis=1)
+    
+    if sr2 != sr:
+        from scipy.signal import resample
+        data2 = resample(data2, int(len(data2) * sr / sr2))
+        print(f"      Resampled {sr2} -> {sr} Hz")
+    
+    min_len = min(len(data), len(data2))
+    data = data[:min_len]
+    data2 = data2[:min_len]
+    
+    diff = data - data2
+    diff_rms = np.sqrt(np.mean(diff**2))
+    orig_rms = np.sqrt(np.mean(data**2))
+    similarity = max(0, (1 - diff_rms / orig_rms)) * 100 if orig_rms > 0 else 0
+    
+    print(f"      Aligned to {min_len/sr:.2f}s")
+    print(f"      Similarity: {similarity:.1f}%")
+    print(f"      Difference RMS: {20*np.log10(diff_rms + 1e-10):.1f} dB")
+    
+    print("[3/4] Computing spectrograms...")
+    t0 = time.perf_counter()
+    
+    from scipy.signal import stft
+    nperseg = 2048
+    noverlap = 1536
+    
+    _, times, Zxx1 = stft(data, fs=sr, nperseg=nperseg, noverlap=noverlap)
+    frequencies, _, Zxx2 = stft(data2, fs=sr, nperseg=nperseg, noverlap=noverlap)
+    _, _, Zxx_diff = stft(diff, fs=sr, nperseg=nperseg, noverlap=noverlap)
+    
+    S1_db = 10 * np.log10(np.abs(Zxx1)**2 + 1e-10)
+    S2_db = 10 * np.log10(np.abs(Zxx2)**2 + 1e-10)
+    Sdiff_db = 10 * np.log10(np.abs(Zxx_diff)**2 + 1e-10)
+    
+    stft_time = time.perf_counter() - t0
+    print(f"      Done ({fmt_time(stft_time)})")
+    
+    print("[4/4] Rendering...")
+    t0 = time.perf_counter()
+    
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    
+    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(12, 10))
+    extent = [times[0], times[-1], frequencies[0], frequencies[-1]]
+    vmin, vmax = -80, 0
+    
+    im1 = ax1.imshow(S1_db, aspect='auto', origin='lower', extent=extent, cmap='inferno', vmin=vmin, vmax=vmax)
+    ax1.set_ylabel('Freq (Hz)')
+    ax1.set_title(f'A: {Path(file_path).stem}')
+    ax1.set_ylim(0, min(20000, sr/2))
+    plt.colorbar(im1, ax=ax1, label='dB')
+    
+    im2 = ax2.imshow(S2_db, aspect='auto', origin='lower', extent=extent, cmap='inferno', vmin=vmin, vmax=vmax)
+    ax2.set_ylabel('Freq (Hz)')
+    ax2.set_title(f'B: {Path(args.compare).stem}')
+    ax2.set_ylim(0, min(20000, sr/2))
+    plt.colorbar(im2, ax=ax2, label='dB')
+    
+    im3 = ax3.imshow(Sdiff_db, aspect='auto', origin='lower', extent=extent, cmap='inferno', vmin=-100, vmax=-20)
+    ax3.set_xlabel('Time (s)')
+    ax3.set_ylabel('Freq (Hz)')
+    ax3.set_title(f'Difference (A - B) | Similarity: {similarity:.1f}%')
+    ax3.set_ylim(0, min(20000, sr/2))
+    plt.colorbar(im3, ax=ax3, label='dB')
+    
+    plt.tight_layout()
+    render_time = time.perf_counter() - t0
+    
+    if args.output:
+        output_path = args.output
+    else:
+        output_path = str(outputs_dir / f"{Path(file_path).stem}_vs_{Path(args.compare).stem}.pdf")
+    
+    plt.savefig(output_path, dpi=150)
+    print(f"      Saved: {output_path}")
+    
+    if not args.no_display:
+        try: plt.show()
+        except: pass
+    
+    plt.close('all')
     total = time.perf_counter() - script_start
     print(f"\nDone in {fmt_time(total)}")
     sys.exit(0)
