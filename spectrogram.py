@@ -17,6 +17,7 @@ parser.add_argument("--compare", metavar="FILE", help="Compare with another file
 parser.add_argument("--quality", action="store_true", help="Full quality mode (slower)")
 parser.add_argument("--log", action="store_true", help="Log frequency axis")
 parser.add_argument("--no-display", action="store_true", help="Don't show plot")
+parser.add_argument("--open", dest="open_file", action="store_true", help="Open output file when done")
 parser.add_argument("--info", action="store_true", help="Show file info only")
 args = parser.parse_args()
 
@@ -27,17 +28,13 @@ if args.quality:
     OVERLAP = 0.75
     DPI = 300
     FMT = "png"
-    MAX_TIME_BINS = None
-    MAX_FREQ_BINS = None
 else:
     MODE = "fast"
-    MAX_SR = 44100
+    MAX_SR = None  # before I downsampled (it didn't really help)
     NPERSEG = 1024
     OVERLAP = 0.5
     DPI = 150
     FMT = "pdf"
-    MAX_TIME_BINS = 2000
-    MAX_FREQ_BINS = 512
 
 CODEC_PROFILES = {
     'mp3_128': {'cutoff': (15500, 16500), 'sbr': False, 'shelf': 'hard'},
@@ -52,6 +49,72 @@ CODEC_PROFILES = {
     'lossless': {'cutoff': (21000, 48000), 'sbr': False, 'shelf': 'none'},
 }
 
+def analyze_dynamics(data, sr):
+    """Analyze dynamic range, clipping, and crest factor."""
+    peak = np.max(np.abs(data))
+    peak_db = 20 * np.log10(peak + 1e-10)
+    
+    rms = np.sqrt(np.mean(data ** 2))
+    rms_db = 20 * np.log10(rms + 1e-10)
+    
+    crest_factor = peak_db - rms_db
+    
+    clip_threshold = 0.99
+    clipped_samples = np.sum(np.abs(data) >= clip_threshold)
+    clip_percentage = (clipped_samples / len(data)) * 100
+    
+    clip_indices = np.where(np.abs(data) >= clip_threshold)[0]
+    clip_times = clip_indices / sr if len(clip_indices) > 0 else []
+    
+    window_size = int(0.05 * sr)
+    n_windows = len(data) // window_size
+    if n_windows > 0:
+        windowed = data[:n_windows * window_size].reshape(n_windows, window_size)
+        window_rms = np.sqrt(np.mean(windowed ** 2, axis=1))
+        window_rms_db = 20 * np.log10(window_rms + 1e-10)
+        
+        # DR is the difference between the 95th percentile and the 5th percentile
+        loud = np.percentile(window_rms_db, 95)
+        quiet = np.percentile(window_rms_db, 5)
+        dynamic_range = loud - quiet
+    else:
+        dynamic_range = 0
+    
+    # also added "loudness war era" recogniton for old songs
+    if crest_factor < 6:
+        dr_rating = "brickwalled"
+    elif crest_factor < 9:
+        dr_rating = "compressed"
+    elif crest_factor < 14:
+        dr_rating = "moderate"
+    else:
+        dr_rating = "dynamic"
+    
+    return {
+        'peak_db': peak_db,
+        'rms_db': rms_db,
+        'crest_factor': crest_factor,
+        'dynamic_range': dynamic_range,
+        'dr_rating': dr_rating,
+        'clipped_samples': clipped_samples,
+        'clip_percentage': clip_percentage,
+        'clip_times': clip_times[:10] if len(clip_times) > 0 else [],
+    }
+
+def open_file(path):
+    """Open file with system default application."""
+    import subprocess
+    import platform
+    try:
+        if platform.system() == 'Darwin':
+            subprocess.run(['open', path], check=True)
+        elif platform.system() == 'Windows':
+            os.startfile(path)
+        else:
+            subprocess.run(['xdg-open', path], check=True)
+    except:
+        pass
+
 def detect_codec(data, sr):
     from scipy.signal import stft
     from scipy.ndimage import gaussian_filter1d
@@ -64,7 +127,7 @@ def detect_codec(data, sr):
     avg_spectrum = np.mean(power, axis=1)
     avg_db = 10 * np.log10(avg_spectrum + 1e-10)
     
-    # decimations
+    # decimation
     time_decim = max(1, Zxx.shape[1] // 2000)
     Sxx_db = 10 * np.log10(np.abs(Zxx[:, ::time_decim]) ** 2 + 1e-10)
     times_decim = times[::time_decim]
@@ -80,7 +143,7 @@ def detect_codec(data, sr):
     ultrasonic_delta = None
     if sr > 48000:
         idx_24k = np.argmin(np.abs(frequencies - 24000))
-        
+    
         ultrasonic_peak = np.max(avg_db[idx_24k:])
         ultrasonic_energy = ultrasonic_peak
         ultrasonic_delta = ultrasonic_peak - noise_floor
@@ -159,7 +222,7 @@ def detect_codec(data, sr):
         transcode_warning = f"High sample rate ({sr}Hz) but cutoff at {cutoff_freq:.0f}Hz - likely upsampled lossy"
     elif sr > 48000 and ultrasonic_delta is not None and ultrasonic_delta < 20:
         is_transcode = True
-        transcode_warning = f"No significant ultrasonic content - likely upsampled from 44.1/48kHz source"
+        transcode_warning = f" No significant ultrasonic content - likely upsampled from 44.1/48kHz source"
     elif cutoff_freq < 14000 and drop_detected and not sbr_detected:
         is_transcode = True
         transcode_warning = f"Low cutoff ({cutoff_freq:.0f}Hz) suggests heavily compressed source"
@@ -245,7 +308,7 @@ outputs_dir.mkdir(parents=True, exist_ok=True)
 file_size = Path(file_path).stat().st_size
 print(f"\n[{MODE.upper()} MODE] {Path(file_path).name} ({file_size/1024/1024:.1f} MB)")
 
-print("[1/4] Loading...")
+print("[1/3] Loading...")
 t0 = time.perf_counter()
 data, sr = sf.read(file_path, dtype='float32')
 load_time = time.perf_counter() - t0
@@ -256,7 +319,23 @@ if data.ndim > 1:
 duration = len(data) / sr
 print(f"      {sr} Hz, {duration:.1f}s, {len(data):,} samples ({fmt_time(load_time)})")
 
+# dynamics!
+dynamics = analyze_dynamics(data, sr)
+print(f"      Peak: {dynamics['peak_db']:.1f} dB | RMS: {dynamics['rms_db']:.1f} dB | Crest: {dynamics['crest_factor']:.1f} dB ({dynamics['dr_rating']})")
+if dynamics['clip_percentage'] > 0:
+    print(f"      ⚠ Clipping: {dynamics['clipped_samples']:,} samples ({dynamics['clip_percentage']:.3f}%)")
+
 if args.info:
+    print(f"\n--- DYNAMICS ANALYSIS ---")
+    print(f"  Peak level:      {dynamics['peak_db']:.1f} dB")
+    print(f"  RMS level:       {dynamics['rms_db']:.1f} dB")
+    print(f"  Crest factor:    {dynamics['crest_factor']:.1f} dB")
+    print(f"  Dynamic range:   {dynamics['dynamic_range']:.1f} dB")
+    print(f"  Rating:          {dynamics['dr_rating'].upper()}")
+    print(f"  Clipped samples: {dynamics['clipped_samples']:,} ({dynamics['clip_percentage']:.4f}%)")
+    if len(dynamics['clip_times']) > 0:
+        times_str = ", ".join([f"{t:.2f}s" for t in dynamics['clip_times'][:5]])
+        print(f"  Clip locations:  {times_str}{'...' if len(dynamics['clip_times']) > 5 else ''}")
     sys.exit(0)
 
 if args.detect:
@@ -386,8 +465,14 @@ if args.detect:
     print(f"      Saved: {output_path}")
     
     if not args.no_display:
+        import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
         try: plt.show()
         except: pass
+
+    if args.open_file:
+        open_file(output_path)
     
     plt.close('all')
     
@@ -487,35 +572,21 @@ if args.compare:
     print(f"      Saved: {output_path}")
     
     if not args.no_display:
+        import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
         try: plt.show()
         except: pass
+    
+    if args.open_file:
+        open_file(output_path)
     
     plt.close('all')
     total = time.perf_counter() - script_start
     print(f"\nDone in {fmt_time(total)}")
     sys.exit(0)
 
-print("[2/4] Preprocessing...")
-t0 = time.perf_counter()
-original_sr = sr
-
-if MAX_SR and sr > MAX_SR:
-    if sr % MAX_SR == 0:
-        factor = sr // MAX_SR
-        data = data[::factor]
-        sr = MAX_SR
-        print(f"      Decimated {original_sr} → {sr} Hz")
-    else:
-        from scipy.signal import resample_poly
-        from math import gcd
-        g = gcd(sr, MAX_SR)
-        data = resample_poly(data, MAX_SR // g, sr // g)
-        sr = MAX_SR
-        print(f"      Resampled {original_sr} → {sr} Hz")
-
-preprocess_time = time.perf_counter() - t0
-
-print("[3/4] Computing STFT...")
+print("[2/3] Computing STFT...")
 t0 = time.perf_counter()
 
 from scipy.signal import stft
@@ -528,7 +599,7 @@ time_decimation = max(1, total_frames // target_time_bins)
 
 frequencies, times, Zxx = stft(data, fs=sr, nperseg=NPERSEG, noverlap=noverlap, window='hann')
 
-# conversion then ERADICATE!!!! to save memory lol
+# conversion then ERADICATE!
 Sxx_db = 10 * np.log10(np.abs(Zxx[:, ::time_decimation]) ** 2 + 1e-10)
 times = times[::time_decimation]
 del Zxx, data
@@ -537,7 +608,7 @@ stft_time = time.perf_counter() - t0
 
 print(f"      {Sxx_db.shape[0]}x{Sxx_db.shape[1]} bins, {sr/NPERSEG:.1f} Hz res ({fmt_time(stft_time)})")
 
-print("[4/4] Rendering...")
+print("[3/3] Rendering...")
 t0 = time.perf_counter()
 
 import matplotlib
@@ -572,8 +643,14 @@ save_time = time.perf_counter() - t0
 print(f"      Saved: {output_path} ({fmt_time(save_time)})")
 
 if not args.no_display:
-    try: plt.show()
-    except: pass
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        try: plt.show()
+        except: pass
+
+if args.open_file:
+    open_file(output_path)
 
 plt.close('all')
 
