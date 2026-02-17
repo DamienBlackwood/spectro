@@ -6,24 +6,34 @@ It makes pictures. It does **not** prove provenance, original sample rate, codec
 
 ## Install
 
+**Requirements:** Python 3.9+
 
-Python 3.9+ recommended.
+Clone the repo, set up a virtual environment, and install dependencies:
 
 ```bash
+git clone <repo-url>
+cd spectro
+python3 -m venv venv
+source venv/bin/activate  # on Windows: venv\Scripts\activate
+pip install -U pip
 pip install numpy soundfile scipy matplotlib
 ```
 
-### Optional (recommended): FFmpeg / ffprobe
+### Optional: FFmpeg / ffprobe
 
-Some workflows benefit from cross-checking container metadata (codec, sample rate, bit depth).
+Helps cross-check codec, sample rate, and bit depth from file metadata.
 
-Install FFmpeg system-wide (includes `ffprobe`):
+```bash
+# macOS
+brew install ffmpeg
 
-- macOS (Homebrew): `brew install ffmpeg`
-- Ubuntu/Debian: `sudo apt install ffmpeg`
-- Windows: download static build and add `bin/` to PATH
+# Ubuntu/Debian
+sudo apt install ffmpeg
 
-Note: `ffprobe` is a system binary and does not install into a Python virtual environment.
+# Windows: download static build and add bin/ to PATH
+```
+
+(FFmpeg installs system-wide, not in the venv.)
 
 ## Usage
 
@@ -69,12 +79,12 @@ Common flags:
 --info            # print file info then exit
 ```
 
-## What the modes actually do
+## How the modes work
 
-- default (fast): caps sample rate at 44.1k when needed, smaller FFT, lower DPI, saves PDF by default
-- `--quality`: no downsampling, bigger FFT + overlap, higher DPI, saves PNG by default
-- `--detect`: estimates cutoff + shelf behavior and reports the closest matching profile (heuristic); absence of a cutoff does not imply native hi-res; saves a 1-page analysis PDF
-- `--compare`: time-aligns two files, computes similarity %, and renders A, B, and difference spectrograms
+- **default (fast)**: smaller FFT, lower DPI, PDF output
+- **--quality**: full-resolution FFT + overlap, higher DPI, PNG output
+- **--detect**: analyzes frequency cutoffs and shelf behavior; outputs a 1-page analysis PDF
+- **--compare**: time-aligns two files, shows similarity %, renders both spectrograms + difference
 
 ## Output
 
