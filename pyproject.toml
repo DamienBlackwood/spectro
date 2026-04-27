@@ -1,0 +1,21 @@
+[project]
+name = "spectro"
+version = "1.4.5"
+requires-python = ">=3.8"
+dependencies = [
+    "numpy",
+    "matplotlib",
+    "scipy",
+    "soundfile",
+    "pillow"
+]
+
+[project.scripts]
+spectro = "spectrogram:main"
+
+[tool.setuptools]
+py-modules = ["spectrogram"]
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"

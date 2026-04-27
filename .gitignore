@@ -1,2 +1,9 @@
 *outputs
 .DS_Store
+__pycache__/
+spectro.egg-info/
+dist/
+build/
+*.egg
+.pytest_cache/
+venv
