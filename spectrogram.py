@@ -111,12 +111,9 @@ class TranscodeEvidence:
 @dataclass
 class SpectralAnalysisResult:
     profile: str
-    confidence: str
-    confidence_score: int
     cutoff_freq: float
     shelf_type: str
     sbr_likelihood: str
-    transcode_suspected: bool
     transcode_warning: Optional[str]
     ultrasonic_energy: Optional[float]
     ultrasonic_delta: Optional[float]
@@ -602,21 +599,10 @@ def analyze_transcode_evidence(data: np.ndarray, sr: int) -> SpectralAnalysisRes
         scores[codec] = score
     
     best_profile = max(scores, key=scores.get)
-    confidence_val = scores[best_profile]
-    
-    if confidence_val < 40:
-        confidence_str = "low"
-    elif confidence_val < 70:
-        confidence_str = "medium"
-    else:
-        confidence_str = "high"
-    
-    # Determine if transcode is suspected
-    transcode_suspected = False
+
     transcode_warning = None
-    
+
     if sr > 48000 and cutoff_freq < 20000 and hard_cutoff:
-        transcode_suspected = True
         transcode_warning = f"High sample rate ({sr} Hz) but cutoff at {cutoff_freq:.0f} Hz. It could likely be an upsampled lossy"
     elif sr > 48000 and ultrasonic_delta is not None and ultrasonic_delta < 20:
         transcode_warning = (
@@ -624,16 +610,15 @@ def analyze_transcode_evidence(data: np.ndarray, sr: int) -> SpectralAnalysisRes
             "or upsampled delivery, not necessarily lossy compression"
         )
     elif cutoff_freq < 14000 and hard_cutoff and sbr_likelihood == "none":
-        transcode_suspected = True
         transcode_warning = f"Low cutoff ({cutoff_freq:.0f} Hz) suggests heavily compressed source"
     
     for f in flags:
         evidence.suspicious_flags.append(f"[{f.severity.upper()}] {f.name}: {f.detail}")
     
     return SpectralAnalysisResult(
-        profile=best_profile, confidence=confidence_str, confidence_score=confidence_val,
+        profile=best_profile,
         cutoff_freq=cutoff_freq, shelf_type=shelf_type, sbr_likelihood=sbr_likelihood,
-        transcode_suspected=transcode_suspected, transcode_warning=transcode_warning,
+        transcode_warning=transcode_warning,
         ultrasonic_energy=ultrasonic_energy, ultrasonic_delta=ultrasonic_delta,
         noise_floor=noise_floor, scores=scores, frequencies=frequencies, times=times_decim,
         Sxx_db=Sxx_db, avg_spectrum_db=avg_db, nyquist=nyquist,
@@ -674,7 +659,6 @@ def build_json_report(res: SpectralAnalysisResult, container_codec: str, contain
         "sbr_likelihood": res.evidence.sbr_likelihood,
         "suspicious_windows": res.evidence.suspicious_windows,
         "closest_resemblance": res.profile,
-        "resemblance_confidence": res.confidence,
         "flags": [
             {"severity": f.split(']')[0].strip('['), "text": f.split(']', 1)[1].strip() if ']' in f else f}
             for f in res.evidence.suspicious_flags
@@ -814,7 +798,7 @@ def main():
             if len(res.evidence.suspicious_windows) > 8:
                 print(f"    ... and {len(res.evidence.suspicious_windows) - 8} more")
         
-        print(f"\n  Closest cutoff resemblance: {res.profile.upper()} ({res.confidence})")
+        print(f"\n  Closest cutoff resemblance: {res.profile.upper()}")
         
         if res.transcode_warning:
             print(f"\n  ⚠ {res.transcode_warning}")
@@ -856,7 +840,7 @@ def main():
         ax1.set_ylabel('Power (dB)')
         
         if res.evidence.verdict == "FAIL":
-            title = "Frequency Spectrum - Suspicious cutoff / possible lossy source"
+            title = "Frequency Spectrum - Strong lossy transcode evidence"
         elif res.evidence.verdict == "WARN":
             title = "Frequency Spectrum - Suspicious cutoff / possible lossy source"
         elif res.evidence.verdict == "PASS":
