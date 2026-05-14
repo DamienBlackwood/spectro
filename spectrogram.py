@@ -71,6 +71,72 @@ DR_THRESHOLDS = {
     'moderate': 14
 }
 
+@dataclass(frozen=True)
+class Thresholds:
+    # STFT
+    detect_nperseg: int = 8192
+    detect_noverlap: int = 6144
+    display_nperseg: int = 1024
+    display_overlap: float = 0.5
+
+    # Active-band / frame masking
+    floor_margin_db: float = 18.0    
+    frame_mean_margin: float = 12.0   
+    high_band_margin: float = 6.0      
+    high_band_low_hz: float = 8000.0
+    high_band_high_hz: float = 16000.0
+
+    cutoff_search_start_hz: float = 12000.0
+    nyquist_search_end: float = 0.995   # × nyquist
+    nyquist_high_band_cap: float = 0.90 # × nyquist
+    nyquist_near_low: float = 0.90      # × nyquist
+    nyquist_near_high: float = 0.99     # × nyquist
+    nyquist_persistence_default: float = 0.94
+    nyquist_suspicious_cap: float = 0.92
+
+    grad_threshold_offset: float = 1.5
+    hard_shelf_local_drop: float = -3.0
+    medium_shelf_local_drop: float = -1.5
+    soft_shelf_local_drop: float = -1.0
+    timewin_local_drop: float = -3.0
+
+    end_energy_margin: float = 5.0
+    drop_search_local_threshold: float = 10.0
+    drop_search_far_threshold: float = 20.0
+
+    hard_cutoff_drop_db: float = 15.0
+    candidate_cutoffs: tuple = (14000, 16000, 18000, 19000, 20000, 20500, 21000)
+    cutoff_drop_width_hz: float = 1000.0
+    cutoff_persistence_pad_hz: float = 500.0
+
+    sbr_max_cutoff_hz: float = 16000.0
+    sbr_above_energy_margin: float = 15.0
+    sbr_band_delta_db: float = 12.0
+    sbr_corr_threshold: float = 0.5
+    sbr_flatness_ratio: float = 1.3
+
+    ultrasonic_floor_hz: float = 24000.0
+    ultrasonic_delta_threshold: float = 20.0
+    high_sample_rate_hz: int = 48000
+
+    # Classification verdict
+    fail_cutoff_hz: float = 18000.0
+    fail_persistence: float = 0.5
+    warn_persistence: float = 0.4
+    pass_near_nyquist_margin: float = 8.0
+    low_high_band_margin: float = 6.0
+    low_cutoff_hz: float = 14000.0
+    upsample_cutoff_hz: float = 20000.0
+
+    # Dynamics
+    clip_threshold: float = 0.99
+    clip_window_sec: float = 0.05
+
+    dpi: int = 150
+    output_fmt: str = "png"
+
+T = Thresholds()
+
 @dataclass
 class DynamicsResult:
     peak_db: float
@@ -151,17 +217,16 @@ def analyze_dynamics(data: np.ndarray, sr: int) -> DynamicsResult:
     
     crest_factor = peak_db - rms_db
     
-    clip_threshold = 0.99
-    clipped_samples = np.sum(np.abs(data) >= clip_threshold)
+    clipped_samples = np.sum(np.abs(data) >= T.clip_threshold)
     clip_percentage = (clipped_samples / data.size) * 100
-    
+
     # Mix to mono for macro-level windowed dynamics
     mono_data = data.mean(axis=1) if data.ndim > 1 else data
-    
-    clip_indices = np.where(np.abs(mono_data) >= clip_threshold)[0]
+
+    clip_indices = np.where(np.abs(mono_data) >= T.clip_threshold)[0]
     clip_times = (clip_indices / sr).tolist() if len(clip_indices) > 0 else []
-    
-    window_size = int(0.05 * sr)
+
+    window_size = int(T.clip_window_sec * sr)
     n_windows = len(mono_data) // window_size
     if n_windows > 0:
         windowed = mono_data[:n_windows * window_size].reshape(n_windows, window_size)
@@ -229,7 +294,7 @@ def load_audio(file_path: str) -> Tuple[np.ndarray, int]:
             except OSError:
                 pass
 
-def active_band_edge(S_db: np.ndarray, freqs: np.ndarray, floor_margin_db: float = 18) -> np.ndarray:
+def active_band_edge(S_db: np.ndarray, freqs: np.ndarray, floor_margin_db: float = T.floor_margin_db) -> np.ndarray:
     """Estimate highest frequency with meaningful energy per frame."""
     edges = []
     for frame in S_db.T:
@@ -247,7 +312,7 @@ def band_mean(avg_db: np.ndarray, freqs: np.ndarray, low: float, high: float) ->
         return np.nan
     return float(np.mean(avg_db[mask]))
 
-def cutoff_drop_score(avg_db: np.ndarray, freqs: np.ndarray, cutoff_hz: float, width: float = 1000) -> float:
+def cutoff_drop_score(avg_db: np.ndarray, freqs: np.ndarray, cutoff_hz: float, width: float = T.cutoff_drop_width_hz) -> float:
     below = band_mean(avg_db, freqs, cutoff_hz - width, cutoff_hz)
     above = band_mean(avg_db, freqs, cutoff_hz, cutoff_hz + width)
     if np.isnan(below) or np.isnan(above):
@@ -257,19 +322,19 @@ def cutoff_drop_score(avg_db: np.ndarray, freqs: np.ndarray, cutoff_hz: float, w
 def get_active_frames(Sxx_db: np.ndarray, freqs: np.ndarray, noise_floor: float, nyquist: float) -> np.ndarray:
     """Return boolean mask of frames that are loud enough and spectrally rich."""
     frame_mean = np.mean(Sxx_db, axis=0)
-    high_mask = (freqs >= 8000) & (freqs < min(16000, nyquist * 0.90))
+    high_mask = (freqs >= T.high_band_low_hz) & (freqs < min(T.high_band_high_hz, nyquist * T.nyquist_high_band_cap))
     if not np.any(high_mask):
         high_band_energy = np.full(Sxx_db.shape[1], noise_floor - 100)
     else:
         high_band_energy = np.mean(Sxx_db[high_mask, :], axis=0)
-    active = (frame_mean > noise_floor + 12) & (high_band_energy > noise_floor + 6)
+    active = (frame_mean > noise_floor + T.frame_mean_margin) & (high_band_energy > noise_floor + T.high_band_margin)
     return active
 
 def _analyze_channel(data_ch: np.ndarray, sr: int) -> ChannelAnalysis:
     """Analyze a single channel and return cutoff, shelf, SBR likelihood, and spectral data."""
-    nperseg = 8192
-    noverlap = 6144
-    
+    nperseg = T.detect_nperseg
+    noverlap = T.detect_noverlap
+
     frequencies, times, Zxx = stft(data_ch, fs=sr, nperseg=nperseg, noverlap=noverlap, window='hann')
     power = np.abs(Zxx) ** 2
     avg_spectrum = np.mean(power, axis=1)
@@ -284,8 +349,8 @@ def _analyze_channel(data_ch: np.ndarray, sr: int) -> ChannelAnalysis:
     noise_floor = np.percentile(avg_db, 5)
     
     nyquist = sr / 2
-    search_start_idx = np.argmin(np.abs(frequencies - 12000))
-    search_end_hz = nyquist * 0.995
+    search_start_idx = np.argmin(np.abs(frequencies - T.cutoff_search_start_hz))
+    search_end_hz = nyquist * T.nyquist_search_end
     search_end_idx = np.searchsorted(frequencies, search_end_hz)
     if search_end_idx <= search_start_idx:
         search_end_idx = len(frequencies) - 1
@@ -299,35 +364,35 @@ def _analyze_channel(data_ch: np.ndarray, sr: int) -> ChannelAnalysis:
         search_gradient = gradient[search_start_idx:search_end_idx]
         search_spectrum = smoothed[search_start_idx:search_end_idx]
         baseline_grad = np.median(gradient[search_start_idx // 2:search_start_idx])
-        threshold = baseline_grad - 1.5
-        
+        threshold = baseline_grad - T.grad_threshold_offset
+
         for i in range(len(search_gradient)):
-            if search_gradient[i] < threshold and search_spectrum[i] > noise_floor + 10:
+            if search_gradient[i] < threshold and search_spectrum[i] > noise_floor + T.drop_search_local_threshold:
                 window_start = max(0, i - 5)
                 window_end = min(len(search_gradient), i + 10)
                 local_drop = np.min(search_gradient[window_start:window_end])
-                
-                if local_drop < -1.0:
+
+                if local_drop < T.soft_shelf_local_drop:
                     cutoff_idx = search_start_idx + i
                     cutoff_freq = frequencies[cutoff_idx]
                     drop_detected = True
-                    if local_drop < -3:
+                    if local_drop < T.hard_shelf_local_drop:
                         shelf_type = 'hard'
-                    elif local_drop < -1.5:
+                    elif local_drop < T.medium_shelf_local_drop:
                         shelf_type = 'medium'
                     else:
                         shelf_type = 'soft'
                     break
-        
+
         if not drop_detected:
             end_energy = np.mean(smoothed[-20:])
             mid_energy = np.mean(smoothed[search_start_idx:search_start_idx + 20])
-            if end_energy > noise_floor + 5 and (mid_energy - end_energy) < 20:
+            if end_energy > noise_floor + T.end_energy_margin and (mid_energy - end_energy) < T.drop_search_far_threshold:
                 cutoff_freq = nyquist
                 shelf_type = 'none'
     
     sbr_likelihood = "none"
-    if cutoff_freq < 16000 and cutoff_idx < len(frequencies) - 50:
+    if cutoff_freq < T.sbr_max_cutoff_hz and cutoff_idx < len(frequencies) - 50:
         below_start = max(0, cutoff_idx - 80)
         below_end = cutoff_idx - 20
         above_start = cutoff_idx + 20
@@ -339,15 +404,15 @@ def _analyze_channel(data_ch: np.ndarray, sr: int) -> ChannelAnalysis:
             below_energy = np.mean(below_region)
             above_energy = np.mean(above_region)
             
-            if above_energy > noise_floor + 15 and (below_energy - above_energy) < 12:
+            if above_energy > noise_floor + T.sbr_above_energy_margin and (below_energy - above_energy) < T.sbr_band_delta_db:
                 min_len = min(len(below_region), len(above_region))
                 if min_len > 10:
                     corr = np.corrcoef(below_region[:min_len], above_region[:min_len])[0, 1]
-                    if not np.isnan(corr) and corr > 0.5:
+                    if not np.isnan(corr) and corr > T.sbr_corr_threshold:
                         sbr_likelihood = "possible"
                         upper_flatness = spectral_flatness(10 ** (above_region / 10))
                         lower_flatness = spectral_flatness(10 ** (below_region / 10))
-                        if upper_flatness > lower_flatness * 1.3:
+                        if upper_flatness > lower_flatness * T.sbr_flatness_ratio:
                             sbr_likelihood = "likely"
     
     return ChannelAnalysis(
@@ -377,8 +442,8 @@ def analyze_time_windows(Zxx_full: np.ndarray, times_full: np.ndarray, hop: int,
     n_windows = max(1, n_frames // frames_per_window)
     suspicious = []
 
-    search_start_idx = np.argmin(np.abs(frequencies - 12000))
-    search_end_idx = np.searchsorted(frequencies, nyquist * 0.995)
+    search_start_idx = np.argmin(np.abs(frequencies - T.cutoff_search_start_hz))
+    search_end_idx = np.searchsorted(frequencies, nyquist * T.nyquist_search_end)
     if search_end_idx <= search_start_idx:
         return suspicious
 
@@ -398,16 +463,16 @@ def analyze_time_windows(Zxx_full: np.ndarray, times_full: np.ndarray, hop: int,
         search_gradient = gradient[search_start_idx:search_end_idx]
         search_spectrum = smoothed[search_start_idx:search_end_idx]
         baseline_grad = np.median(gradient[search_start_idx // 2:search_start_idx])
-        threshold = baseline_grad - 1.5
+        threshold = baseline_grad - T.grad_threshold_offset
 
         for j in range(len(search_gradient)):
-            if search_gradient[j] < threshold and search_spectrum[j] > noise_floor + 10:
+            if search_gradient[j] < threshold and search_spectrum[j] > noise_floor + T.drop_search_local_threshold:
                 window_start = max(0, j - 5)
                 window_end = min(len(search_gradient), j + 10)
                 local_drop = np.min(search_gradient[window_start:window_end])
-                if local_drop < -3:
+                if local_drop < T.timewin_local_drop:
                     cf = frequencies[search_start_idx + j]
-                    if cf < nyquist * 0.92:
+                    if cf < nyquist * T.nyquist_suspicious_cap:
                         t0 = times_full[f_start]
                         t1 = times_full[f_end - 1]
                         suspicious.append(f"{t0:.0f}s–{t1:.0f}s  cutoff around {cf:.0f} Hz")
@@ -430,8 +495,8 @@ def classify_transcode(
 ) -> Tuple[TranscodeEvidence, List[EvidenceFlag]]:
     flags: List[EvidenceFlag] = []
     
-    if sr > 48000:
-        if ultrasonic_delta is not None and ultrasonic_delta < 20:
+    if sr > T.high_sample_rate_hz:
+        if ultrasonic_delta is not None and ultrasonic_delta < T.ultrasonic_delta_threshold:
             flags.append(EvidenceFlag(
                 severity="info",
                 name="Limited ultrasonic content",
@@ -451,23 +516,23 @@ def classify_transcode(
             detail="Weak correlation between lower and upper band; could be SBR or natural spectral structure."
         ))
     
-    if hard_cutoff and cutoff_freq < 18000 and cutoff_persistence > 0.5:
+    if hard_cutoff and cutoff_freq < T.fail_cutoff_hz and cutoff_persistence > T.fail_persistence:
         flags.append(EvidenceFlag(
             severity="critical",
             name="Persistent hard cutoff below 18 kHz",
             detail=f"Hard cutoff around {cutoff_freq:.0f} Hz persists in {cutoff_persistence*100:.0f}% of active frames."
         ))
         verdict = "FAIL"
-    elif hard_cutoff and cutoff_freq < nyquist * 0.92 and cutoff_persistence > 0.4:
+    elif hard_cutoff and cutoff_freq < nyquist * T.nyquist_suspicious_cap and cutoff_persistence > T.warn_persistence:
         flags.append(EvidenceFlag(
             severity="high",
             name="Persistent hard cutoff below full-band range",
             detail=f"Hard cutoff around {cutoff_freq:.0f} Hz persists in {cutoff_persistence*100:.0f}% of active frames."
         ))
         verdict = "WARN"
-    elif near_nyquist_db > noise_floor + 8 and not hard_cutoff:
+    elif near_nyquist_db > noise_floor + T.pass_near_nyquist_margin and not hard_cutoff:
         verdict = "PASS"
-    elif high_band_db < noise_floor + 6:
+    elif high_band_db < noise_floor + T.low_high_band_margin:
         flags.append(EvidenceFlag(
             severity="low",
             name="Little high-frequency content",
@@ -534,7 +599,7 @@ def analyze_transcode_evidence(data: np.ndarray, sr: int) -> SpectralAnalysisRes
     nyquist = sr / 2
 
     Sxx_db_primary = primary.Sxx_db
-    edges_all = active_band_edge(Sxx_db_primary, frequencies, floor_margin_db=18)
+    edges_all = active_band_edge(Sxx_db_primary, frequencies, floor_margin_db=T.floor_margin_db)
     
     active_mask = get_active_frames(Sxx_db_primary, frequencies, noise_floor, nyquist)
     active_frames_pct = float(np.mean(active_mask)) if len(active_mask) > 0 else 0.0
@@ -544,28 +609,27 @@ def analyze_transcode_evidence(data: np.ndarray, sr: int) -> SpectralAnalysisRes
     edge_p50 = float(np.nanpercentile(edges_all, 50))
     edge_p90 = float(np.nanpercentile(edges_all, 90))
     
-    high_band_db = band_mean(avg_db, frequencies, 16000, min(20000, nyquist * 0.90))
-    near_nyquist_db = band_mean(avg_db, frequencies, nyquist * 0.90, nyquist * 0.99)
+    high_band_db = band_mean(avg_db, frequencies, T.high_band_high_hz, min(20000, nyquist * T.nyquist_high_band_cap))
+    near_nyquist_db = band_mean(avg_db, frequencies, nyquist * T.nyquist_near_low, nyquist * T.nyquist_near_high)
     if np.isnan(high_band_db):
         high_band_db = noise_floor
     if np.isnan(near_nyquist_db):
         near_nyquist_db = noise_floor
-    
-    candidate_cutoffs = [14000, 16000, 18000, 19000, 20000, 20500, 21000]
-    drops = {c: cutoff_drop_score(avg_db, frequencies, c) for c in candidate_cutoffs}
+
+    drops = {c: cutoff_drop_score(avg_db, frequencies, c) for c in T.candidate_cutoffs}
     best_drop_freq, max_drop = max(drops.items(), key=lambda x: x[1]) if drops else (0.0, 0.0)
-    hard_cutoff = max_drop > 15.0
-    
+    hard_cutoff = max_drop > T.hard_cutoff_drop_db
+
     if hard_cutoff:
-        persistence_limit = best_drop_freq + 500
+        persistence_limit = best_drop_freq + T.cutoff_persistence_pad_hz
     else:
-        persistence_limit = nyquist * 0.94
+        persistence_limit = nyquist * T.nyquist_persistence_default
     cutoff_persistence = float(np.mean(valid_edges < persistence_limit)) if len(valid_edges) > 0 else 0.0
-    
+
     ultrasonic_energy = None
     ultrasonic_delta = None
-    if sr > 48000:
-        idx_24k = np.searchsorted(frequencies, 24000)
+    if sr > T.high_sample_rate_hz:
+        idx_24k = np.searchsorted(frequencies, T.ultrasonic_floor_hz)
         if idx_24k < len(frequencies):
             ultrasonic_peak = float(np.max(avg_db[idx_24k:]))
             ultrasonic_energy = ultrasonic_peak
@@ -628,14 +692,14 @@ def analyze_transcode_evidence(data: np.ndarray, sr: int) -> SpectralAnalysisRes
 
     transcode_warning = None
 
-    if sr > 48000 and cutoff_freq < 20000 and hard_cutoff:
+    if sr > T.high_sample_rate_hz and cutoff_freq < T.upsample_cutoff_hz and hard_cutoff:
         transcode_warning = f"High sample rate ({sr} Hz) but cutoff at {cutoff_freq:.0f} Hz. It could likely be an upsampled lossy"
-    elif sr > 48000 and ultrasonic_delta is not None and ultrasonic_delta < 20:
+    elif sr > T.high_sample_rate_hz and ultrasonic_delta is not None and ultrasonic_delta < T.ultrasonic_delta_threshold:
         transcode_warning = (
             "High sample-rate file has little ultrasonic content, it could suggest a 44.1/48 kHz source "
             "or upsampled delivery, not necessarily lossy compression"
         )
-    elif cutoff_freq < 14000 and hard_cutoff and sbr_likelihood == "none":
+    elif cutoff_freq < T.low_cutoff_hz and hard_cutoff and sbr_likelihood == "none":
         transcode_warning = f"Low cutoff ({cutoff_freq:.0f} Hz) suggests heavily compressed source"
     
     evidence.suspicious_flags.extend(flags)
@@ -691,11 +755,6 @@ def main():
     script_start = time.perf_counter()
 
     args = build_parser().parse_args()
-
-    NPERSEG = 1024
-    OVERLAP = 0.5
-    DPI = 150
-    FMT = "png"
 
     if args.file_path is None:
         args.file_path = input("Audio file: ").strip()
@@ -805,7 +864,7 @@ def main():
         print(f"    Cutoff persistence:     {res.evidence.cutoff_persistence*100:.0f}%")
         print(f"    High-band energy:       {res.evidence.high_band_db:.1f} dB")
         print(f"    Near-Nyquist energy:    {res.evidence.near_nyquist_db:.1f} dB")
-        if sr > 48000 and res.ultrasonic_delta is not None:
+        if sr > T.high_sample_rate_hz and res.ultrasonic_delta is not None:
             print(f"    Ultrasonic (24k+):      {res.ultrasonic_delta:.1f} dB above noise")
         
         if len(res.evidence.suspicious_flags) > 0:
@@ -855,7 +914,7 @@ def main():
         
         ax1.plot(freqs, spectrum, 'b-', linewidth=0.8, alpha=0.7, label='Spectrum')
         ax1.axvline(x=res.cutoff_freq, color='r', linestyle='--', label=f"Cutoff: {res.cutoff_freq:.0f} Hz")
-        if sr > 48000:
+        if sr > T.high_sample_rate_hz:
             ax1.axvline(x=24000, color='g', linestyle=':', alpha=0.5, label='24 kHz')
         ax1.axhline(y=res.noise_floor, color='gray', linestyle=':', alpha=0.5, label='Noise floor')
         ax1.set_xlabel('Frequency (Hz)')
@@ -877,7 +936,7 @@ def main():
         extent = [res.times[0], res.times[-1], freqs[0], freqs[-1]]
         im = ax2.imshow(res.Sxx_db, aspect='auto', origin='lower', extent=extent, cmap='inferno', interpolation='bilinear')
         ax2.axhline(y=res.cutoff_freq, color='white', linestyle='--', alpha=0.7)
-        if sr > 48000:
+        if sr > T.high_sample_rate_hz:
             ax2.axhline(y=24000, color='green', linestyle=':', alpha=0.5)
         ax2.set_xlabel('Time (s)')
         ax2.set_ylabel('Frequency (Hz)')
@@ -889,7 +948,7 @@ def main():
         edge_values = res.edge_values
         valid = ~np.isnan(edge_values)
         ax3.plot(edge_times[valid], edge_values[valid], 'c-', linewidth=0.6, alpha=0.8, label='Active edge')
-        ax3.axhline(y=res.nyquist * 0.94, color='gray', linestyle=':', alpha=0.5, label='94% Nyquist')
+        ax3.axhline(y=res.nyquist * T.nyquist_persistence_default, color='gray', linestyle=':', alpha=0.5, label='94% Nyquist')
         if res.evidence.hard_cutoff:
             ax3.axhline(y=res.evidence.best_drop_freq, color='r', linestyle='--', alpha=0.6, label=f"Best drop: {res.evidence.best_drop_freq:.0f} Hz")
         ax3.set_xlabel('Time (s)')
@@ -902,7 +961,7 @@ def main():
         plt.tight_layout()
         
         output_path = args.output if args.output else str(outputs_dir / f"{Path(file_path).stem}_analysis.png")
-        plt.savefig(output_path, dpi=DPI, format=FMT)
+        plt.savefig(output_path, dpi=T.dpi, format=T.output_fmt)
         
         print(f"      Saved: {output_path}")
         if not args.no_open:
@@ -952,8 +1011,8 @@ def main():
         print("[3/4] Computing spectrograms...")
         t0 = time.perf_counter()
         
-        nperseg = 1024
-        noverlap = 512
+        nperseg = T.display_nperseg
+        noverlap = int(T.display_nperseg * T.display_overlap)
         
         frequencies, times, Z1 = stft(data_display, fs=sr, nperseg=nperseg, noverlap=noverlap)
         _, _, Z2 = stft(data2_display, fs=sr, nperseg=nperseg, noverlap=noverlap)
@@ -997,7 +1056,7 @@ def main():
         
         plt.tight_layout()
         output_path = args.output if args.output else str(outputs_dir / f"{Path(file_path).stem}_vs_{Path(args.compare).stem}.png")
-        plt.savefig(output_path, dpi=DPI, format=FMT)
+        plt.savefig(output_path, dpi=T.dpi, format=T.output_fmt)
         
         print(f"      Saved: {output_path}")
         if not args.no_open:
@@ -1011,15 +1070,15 @@ def main():
     print("[2/3] Computing STFT...")
     t0 = time.perf_counter()
     
-    noverlap = int(NPERSEG * OVERLAP)
-    frequencies, times, Zxx = stft(data_display, fs=sr, nperseg=NPERSEG, noverlap=noverlap, window='hann')
+    noverlap = int(T.display_nperseg * T.display_overlap)
+    frequencies, times, Zxx = stft(data_display, fs=sr, nperseg=T.display_nperseg, noverlap=noverlap, window='hann')
     
     time_decimation = max(1, Zxx.shape[1] // 2000)
     Sxx_db = 10 * np.log10(np.abs(Zxx[:, ::time_decimation]) ** 2 + 1e-10)
     times = times[::time_decimation]
     
     stft_time = time.perf_counter() - t0
-    print(f"      {Sxx_db.shape[0]}x{Sxx_db.shape[1]} bins, {sr/NPERSEG:.1f} Hz res ({fmt_time(stft_time)})")
+    print(f"      {Sxx_db.shape[0]}x{Sxx_db.shape[1]} bins, {sr/T.display_nperseg:.1f} Hz res ({fmt_time(stft_time)})")
     
     print("[3/3] Rendering...")
     t0 = time.perf_counter()
@@ -1044,7 +1103,7 @@ def main():
     output_path = args.output if args.output else str(outputs_dir / f"{Path(file_path).stem}.png")
     
     t0 = time.perf_counter()
-    plt.savefig(output_path, dpi=DPI, format=FMT)
+    plt.savefig(output_path, dpi=T.dpi, format=T.output_fmt)
     save_time = time.perf_counter() - t0
     
     print(f"      Saved: {output_path} ({fmt_time(save_time)})")
