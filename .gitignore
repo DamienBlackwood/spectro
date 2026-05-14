@@ -1,5 +1,10 @@
+# output folder
 *outputs
+
+# macOS things
 .DS_Store
+
+# python stuff
 __pycache__/
 spectro.egg-info/
 dist/
@@ -7,3 +12,6 @@ build/
 *.egg
 .pytest_cache/
 venv
+
+# Reference Docs
+TODO.md

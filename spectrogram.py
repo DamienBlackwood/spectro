@@ -4,31 +4,6 @@ import os
 from pathlib import Path
 import argparse
 import time
-
-# Quick audio check before heavy imports
-_parser = argparse.ArgumentParser(description="Spectrogram Generator")
-_parser.add_argument("file_path", nargs="?", help="Input audio file")
-_parser.add_argument("-o", "--output", help="Output filename")
-_parser.add_argument("--detect", action="store_true", help="Spectral authenticity / transcode-evidence analysis")
-_parser.add_argument("--compare", metavar="FILE", help="Compare with another audio file")
-_parser.add_argument("--log", action="store_true", help="Log frequency axis")
-_parser.add_argument("--no-open", dest="no_open", action="store_true", help="Don't auto-open output file")
-_parser.add_argument("--info", action="store_true", help="Show file info only")
-_parser.add_argument("--json", nargs="?", const=None, metavar="FILE", help="Write machine-readable JSON report")
-_args, _ = _parser.parse_known_args()
-if _args.file_path:
-    _fp = _args.file_path.strip().strip('"\'')
-    if os.path.isfile(_fp):
-        with open(_fp, 'rb') as _f:
-            _head = _f.read(16)
-        _ext = Path(_fp).suffix.lower()
-        _audio_magic = {b'RIFF', b'fLaC', b'OggS', b'MThd'}
-        _audio_exts = {'.wav', '.flac', '.ogg', '.opus', '.mp3', '.m4a', '.aac', '.wma', '.aiff', '.aif', '.ape', '.wv', '.mpc', '.dff', '.dsf', '.caf'}
-        if not (any(_head.startswith(m) for m in _audio_magic) or _ext in _audio_exts):
-            print(f"Error: '{Path(_fp).name}' does not appear to be an audio file", file=sys.stderr)
-            sys.exit(1)
-del _parser, _args, _fp, _head, _ext, _audio_magic, _audio_exts
-
 import platform
 
 _import_start = time.perf_counter()
@@ -39,23 +14,44 @@ import subprocess
 from dataclasses import dataclass, asdict
 from typing import Optional, Dict, List, Tuple
 
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
 from scipy.signal import stft, correlate, resample
 from scipy.ndimage import gaussian_filter1d
 
 _import_time = time.perf_counter() - _import_start
 
-parser = argparse.ArgumentParser(description="Spectrogram Generator")
-parser.add_argument("file_path", nargs="?", help="Input audio file")
-parser.add_argument("-o", "--output", help="Output filename")
-parser.add_argument("--detect", action="store_true", help="Spectral authenticity / transcode-evidence analysis")
-parser.add_argument("--compare", metavar="FILE", help="Compare with another audio file")
-parser.add_argument("--log", action="store_true", help="Log frequency axis")
-parser.add_argument("--no-open", dest="no_open", action="store_true", help="Don't auto-open output file")
-parser.add_argument("--info", action="store_true", help="Show file info only")
-parser.add_argument("--json", nargs="?", const=None, metavar="FILE", help="Write machine-readable JSON report")
+_AUDIO_MAGIC = (b'RIFF', b'fLaC', b'OggS', b'MThd', b'ID3')
+_AUDIO_EXTS = {'.wav', '.flac', '.ogg', '.opus', '.mp3', '.m4a', '.aac', '.wma',
+               '.aiff', '.aif', '.ape', '.wv', '.mpc', '.dff', '.dsf', '.caf'}
+
+def looks_like_audio(path: Path) -> bool:
+    """Cheap audio-file sniff by extension or magic bytes."""
+    if path.suffix.lower() in _AUDIO_EXTS:
+        return True
+    try:
+        with open(path, 'rb') as f:
+            head = f.read(16)
+    except OSError:
+        return False
+    return any(head.startswith(m) for m in _AUDIO_MAGIC)
+
+def _lazy_pyplot():
+    """Defer matplotlib import until a command actually plots."""
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    return plt
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(description="Spectrogram Generator")
+    p.add_argument("file_path", nargs="?", help="Input audio file")
+    p.add_argument("-o", "--output", help="Output filename")
+    p.add_argument("--detect", action="store_true", help="Spectral authenticity / transcode-evidence analysis")
+    p.add_argument("--compare", metavar="FILE", help="Compare with another audio file")
+    p.add_argument("--log", action="store_true", help="Log frequency axis")
+    p.add_argument("--no-open", dest="no_open", action="store_true", help="Don't auto-open output file")
+    p.add_argument("--info", action="store_true", help="Show file info only")
+    p.add_argument("--json", nargs="?", const=None, metavar="FILE", help="Write machine-readable JSON report")
+    return p
 
 CODEC_PROFILES = {
     'mp3_128':   {'cutoff': (15500, 16500), 'sbr': False, 'shelf': 'hard'},
@@ -215,7 +211,7 @@ def load_audio(file_path: str) -> Tuple[np.ndarray, int]:
             )
             return sf.read(tmp_path, dtype='float32')
         except subprocess.CalledProcessError:
-            print(f"Error: Could not decode '{file_path}' — not a valid audio file.", file=sys.stderr)
+            print(f"Error: Could not decode '{file_path}'. Doesn't look like a valid audio file.", file=sys.stderr)
             sys.exit(1)
         finally:
             try:
@@ -621,10 +617,10 @@ def analyze_transcode_evidence(data: np.ndarray, sr: int) -> SpectralAnalysisRes
     
     if sr > 48000 and cutoff_freq < 20000 and hard_cutoff:
         transcode_suspected = True
-        transcode_warning = f"High sample rate ({sr} Hz) but cutoff at {cutoff_freq:.0f} Hz — likely upsampled lossy"
+        transcode_warning = f"High sample rate ({sr} Hz) but cutoff at {cutoff_freq:.0f} Hz. It could likely be an upsampled lossy"
     elif sr > 48000 and ultrasonic_delta is not None and ultrasonic_delta < 20:
         transcode_warning = (
-            "High sample-rate file has little ultrasonic content — suggests a 44.1/48 kHz source "
+            "High sample-rate file has little ultrasonic content, it could suggest a 44.1/48 kHz source "
             "or upsampled delivery, not necessarily lossy compression"
         )
     elif cutoff_freq < 14000 and hard_cutoff and sbr_likelihood == "none":
@@ -655,7 +651,7 @@ def print_limitations():
     print("    • This tool cannot prove lossless provenance.")
     print("    • High-bitrate MP3/AAC/Opus can resemble lossless in spectral analysis.")
     print("    • Some true lossless masters naturally lack high-frequency content.")
-    print("    • Final confirmation requires trusted source metadata or AccurateRip/CUETools for CD rips.")
+    print("    • Final confirmation requires trusted source metadata.")
 
 def build_json_report(res: SpectralAnalysisResult, container_codec: str, container_sr: str, container_bitrate: Optional[str]) -> dict:
     return {
@@ -687,44 +683,33 @@ def build_json_report(res: SpectralAnalysisResult, container_codec: str, contain
 
 def main():
     script_start = time.perf_counter()
-    
-    args = parser.parse_args()
-    
+
+    args = build_parser().parse_args()
+
     NPERSEG = 1024
     OVERLAP = 0.5
     DPI = 150
     FMT = "png"
-    
+
     if args.file_path is None:
         args.file_path = input("Audio file: ").strip()
-    
+
     file_path = args.file_path.strip().strip('"\'')
     if not os.path.isfile(file_path):
         print(f"Error: '{Path(file_path).name}' is not an audio file", file=sys.stderr)
         sys.exit(1)
-    
-    outputs_dir = Path(file_path).parent
-    
-    file_size = Path(file_path).stat().st_size
-    print(f"\n{Path(file_path).name} ({file_size/1024/1024:.1f} MB)")
-    
-    if _import_time > 3:
-        print("      (installed numpy/scipy, the next launches will be quicker)")
-    
-    # Audio signature checking
-    audio_magic = {
-        b'RIFF': 'WAV/AIFF',
-        b'fLaC': 'FLAC',
-        b'OggS': 'OGG/Opus/Vorbis',
-        b'MThd': 'MIDI',
-    }
-    with open(file_path, 'rb') as f:
-        head = f.read(16)
-    ext = Path(file_path).suffix.lower()
-    is_audio = any(head.startswith(m) for m in audio_magic) or ext in ('.wav', '.flac', '.ogg', '.opus', '.mp3', '.m4a', '.aac', '.wma', '.aiff', '.aif', '.ape', '.wv', '.mpc', '.dff', '.dsf', '.caf')
-    if not is_audio:
+
+    if not looks_like_audio(Path(file_path)):
         print(f"Error: '{Path(file_path).name}' does not appear to be an audio file", file=sys.stderr)
         sys.exit(1)
+
+    outputs_dir = Path(file_path).parent
+
+    file_size = Path(file_path).stat().st_size
+    print(f"\n{Path(file_path).name} ({file_size/1024/1024:.1f} MB)")
+
+    if _import_time > 3:
+        print("      (installed numpy/scipy, the next launches will be quicker!)")
 
     print("[1/3] Loading...")
     t0 = time.perf_counter()
@@ -853,7 +838,8 @@ def main():
         
         print(f"\n[3/3] Generating analysis plot...")
         t0 = time.perf_counter()
-        
+
+        plt = _lazy_pyplot()
         fig, axes = plt.subplots(3, 1, figsize=(12, 11))
         ax1, ax2, ax3 = axes
         
@@ -978,7 +964,8 @@ def main():
         
         print("[4/4] Rendering...")
         t0 = time.perf_counter()
-        
+
+        plt = _lazy_pyplot()
         fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(12, 10))
         extent = [times[0], times[-1], frequencies[0], frequencies[-1]]
         vmin, vmax = -80, 0
@@ -1030,7 +1017,8 @@ def main():
     
     print("[3/3] Rendering...")
     t0 = time.perf_counter()
-    
+
+    plt = _lazy_pyplot()
     fig, ax = plt.subplots(figsize=(12, 6))
     extent = [times[0], times[-1], frequencies[0], frequencies[-1]]
     im = ax.imshow(Sxx_db, aspect='auto', origin='lower', extent=extent, cmap='inferno', interpolation='bilinear')
