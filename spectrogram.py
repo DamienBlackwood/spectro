@@ -91,6 +91,9 @@ class ChannelAnalysis:
     times: np.ndarray
     Sxx_db: np.ndarray
     avg_db: np.ndarray
+    Zxx_full: np.ndarray
+    times_full: np.ndarray
+    hop: int
 
 @dataclass
 class EvidenceFlag:
@@ -355,6 +358,9 @@ def _analyze_channel(data_ch: np.ndarray, sr: int) -> ChannelAnalysis:
         times=times_decim,
         Sxx_db=Sxx_db,
         avg_db=avg_db,
+        Zxx_full=Zxx,
+        times_full=times,
+        hop=nperseg - noverlap,
     )
 
 def spectral_flatness(power_band: np.ndarray) -> float:
@@ -362,39 +368,38 @@ def spectral_flatness(power_band: np.ndarray) -> float:
     arithmetic = np.mean(power_band + 1e-12)
     return geometric / arithmetic
 
-def analyze_time_windows(data_ch: np.ndarray, sr: int, frequencies: np.ndarray,
-                         nyquist: float, noise_floor: float) -> List[str]:
-    """Analyze ~5-second windows for suspicious cutoffs."""
-    window_samples = int(5 * sr)
-    n_windows = max(1, len(data_ch) // window_samples)
+def analyze_time_windows(Zxx_full: np.ndarray, times_full: np.ndarray, hop: int,
+                         sr: int, frequencies: np.ndarray, nyquist: float,
+                         noise_floor: float) -> List[str]:
+    """Slice existing STFT into ~5-second windows and scan for suspicious cutoffs."""
+    frames_per_window = max(1, int(5 * sr / hop))
+    n_frames = Zxx_full.shape[1]
+    n_windows = max(1, n_frames // frames_per_window)
     suspicious = []
-    
+
+    search_start_idx = np.argmin(np.abs(frequencies - 12000))
+    search_end_idx = np.searchsorted(frequencies, nyquist * 0.995)
+    if search_end_idx <= search_start_idx:
+        return suspicious
+
+    power_full = np.abs(Zxx_full) ** 2
+
     for i in range(n_windows):
-        start = i * window_samples
-        end = min(start + window_samples, len(data_ch))
-        if end - start < window_samples // 2:
+        f_start = i * frames_per_window
+        f_end = min(f_start + frames_per_window, n_frames)
+        if f_end - f_start < frames_per_window // 2:
             continue
-        
-        segment = data_ch[start:end]
-        nperseg = 8192
-        noverlap = 6144
-        _, _, Zxx = stft(segment, fs=sr, nperseg=nperseg, noverlap=noverlap, window='hann')
-        power = np.abs(Zxx) ** 2
-        avg_spectrum = np.mean(power, axis=1)
+
+        avg_spectrum = np.mean(power_full[:, f_start:f_end], axis=1)
         avg_db = 10 * np.log10(avg_spectrum + 1e-10)
         smoothed = gaussian_filter1d(avg_db, sigma=3)
         gradient = np.gradient(smoothed)
-        
-        search_start_idx = np.argmin(np.abs(frequencies - 12000))
-        search_end_idx = np.searchsorted(frequencies, nyquist * 0.995)
-        if search_end_idx <= search_start_idx:
-            continue
-        
+
         search_gradient = gradient[search_start_idx:search_end_idx]
         search_spectrum = smoothed[search_start_idx:search_end_idx]
         baseline_grad = np.median(gradient[search_start_idx // 2:search_start_idx])
         threshold = baseline_grad - 1.5
-        
+
         for j in range(len(search_gradient)):
             if search_gradient[j] < threshold and search_spectrum[j] > noise_floor + 10:
                 window_start = max(0, j - 5)
@@ -403,11 +408,11 @@ def analyze_time_windows(data_ch: np.ndarray, sr: int, frequencies: np.ndarray,
                 if local_drop < -3:
                     cf = frequencies[search_start_idx + j]
                     if cf < nyquist * 0.92:
-                        t0 = start / sr
-                        t1 = end / sr
+                        t0 = times_full[f_start]
+                        t1 = times_full[f_end - 1]
                         suspicious.append(f"{t0:.0f}s–{t1:.0f}s  cutoff around {cf:.0f} Hz")
                     break
-    
+
     return suspicious
 
 def classify_transcode(
@@ -566,7 +571,10 @@ def analyze_transcode_evidence(data: np.ndarray, sr: int) -> SpectralAnalysisRes
             ultrasonic_energy = ultrasonic_peak
             ultrasonic_delta = ultrasonic_peak - noise_floor
     
-    suspicious_windows = analyze_time_windows(channels[0], sr, frequencies, nyquist, noise_floor)
+    suspicious_windows = analyze_time_windows(
+        primary.Zxx_full, primary.times_full, primary.hop,
+        sr, frequencies, nyquist, noise_floor,
+    )
     
     evidence, flags = classify_transcode(
         cutoff_freq=cutoff_freq,
