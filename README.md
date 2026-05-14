@@ -44,7 +44,7 @@ No idea, I knew that C++ would be faster. But, I don’t know C++ well enough to
 
 ### Methodology
 
-**All** code was written by me, drawing from existing research but implemented independently. No AI was used.
+All code written and thought out by me, with only **minor** assistance from AI. But mostly drawn from existing research/examples and implemented independently.
 
 ## License
 This software is licensed under the **MIT License**.
