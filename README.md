@@ -13,6 +13,8 @@ I needed a way to quickly spot resampled or lossy-upconverted audio files. So I 
 
  The results are a hypothesis based on signal processing, not definitive proof of a track's provenance, sample rate, or codec.
 
+ and, the first launch MIGHT be a slow because all dependencies have to initalise, but after that, it'll be snappy!
+
 
 ## How to use
 

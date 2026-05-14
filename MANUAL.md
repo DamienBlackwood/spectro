@@ -7,7 +7,10 @@
 # OPTIONS
 
 `--detect`
-:   Run spectral heuristics to flag possible lossy transcoding or upsampling. Prints a verdict (PASS / WARN / FAIL / INCONCLUSIVE) along with evidence flags such as cutoff persistence, band-drop scores, and high-band energy.
+:   Run spectral forensics. Computes a 0–100 *lossy evidence score* from six independent signals (active spectral edge percentiles, transition band slope, edge jitter over time, high/low band energy ratio, rolloff stability, SBR likelihood). Along with a separate 0–100 *data quality score* that flags silent, narrow band, or analog source material.
+
+ Verdict (PASS / WARN / FAIL / INCONCLUSIVE) is derived from both.
+
 
 `--compare` *FILE*
 :   Compare two audio files side-by-side with a null-test difference spectrogram.
@@ -19,13 +22,16 @@
 :   Save spectrogram as specified filename.
 
 `--no-open`
-:   Do not open automatically after save.
+:   Do not open automatically.
 
 `--info`
 :   Only display file info.
 
 `--json` [*FILE*]
-:   Write a JSON report alongside the analysis plot. If no filename given, defaults to `[input_stem]_analysis.json`.
+:   Write a JSON report alongside the analysis plot. If no filename given, defaults to `[input_stem]_analysis.json`. The report includes `lossy_score`, `quality_score`, per-feature `subscores`, and all underlying metrics.
+
+`-v`, `--verbose`
+:   In `--detect` mode, print every subscore to see what gave the final response.
 
 # EXAMPLES
 
@@ -33,7 +39,10 @@
 :   Simple spectrogram generation.
 
 `spectro track.flac --detect`
-:   Runs spectral heuristics to flag possible lossy transcoding or upsampling.
+:   Runs *"forensics"* and prints verdict + lossy/quality scores.
+
+`spectro track.flac --detect --verbose`
+:   Same as above, but with per feature subscore breakdown (edge, slope, jitter, high_band, rolloff, sbr, persistence).
 
 `spectro orig.flac --compare remaster.flac`
 :   Compares two audio files.
@@ -69,7 +78,7 @@ cd spectro
 pipx install .
 ```
 
-Then run `spectro` from anywhere. Note that the first launch after install may take a few seconds — numpy, scipy, and matplotlib need to warm up. Subsequent launches are snappy.
+Then run `spectro` from anywhere. Note that the first launch after install may take a few seconds — numpy, scipy, and matplotlib need to initalise Subsequent launches are snappy!
 
 **Manual:**
 

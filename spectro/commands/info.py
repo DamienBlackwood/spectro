@@ -1,0 +1,14 @@
+from ..dataclasses_ import DynamicsResult
+
+
+def cmd_info(dynamics: DynamicsResult) -> None:
+    print(f"\n--- DYNAMICS ANALYSIS ---")
+    print(f"  Peak level:      {dynamics.peak_db:.1f} dB")
+    print(f"  RMS level:       {dynamics.rms_db:.1f} dB")
+    print(f"  Crest factor:    {dynamics.crest_factor:.1f} dB")
+    print(f"  Dynamic range:   {dynamics.dynamic_range:.1f} dB")
+    print(f"  Rating:          {dynamics.dr_rating.upper()}")
+    print(f"  Clipped samples: {dynamics.clipped_samples:,} ({dynamics.clip_percentage:.4f}%)")
+    if len(dynamics.clip_times) > 0:
+        times_str = ", ".join([f"{t:.2f}s" for t in dynamics.clip_times])
+        print(f"  Clip locations:  {times_str}")

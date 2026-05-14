@@ -1,5 +1,47 @@
 # Changelog
 
+## v1.5.0
+
+Rewrote detect mode with a much smarter verdict system, plus a big internal cleanup. Old `--detect` was conservative to a fault, anything that wasn't an obvious hard cutoff fell into INCONCLUSIVE. Replaced it with a six-feature evidence-score system based on actual codec literature.
+
+- Verdict now uses two scores: `lossy_score` (0–100) and `quality_score` (0–100), computed independently. Silent / narrowband / analog sources land in INCONCLUSIVE instead of getting force-classified into PASS or FAIL.
+- Six features feed into `lossy_score`: spectral edge (p90 distance from known codec cutoffs), transition-band slope in dB/kHz, edge jitter over time (MAD), high/low band energy ratio, rolloff stability, SBR likelihood, and cutoff persistence.
+- Codec cutoff anchors built in: 16k / 18.6k / 19.7k / 20.5k for MP3 128/192/256/320, plus Opus bandwidth modes.
+- Balanced verdict thresholds: FAIL ≥ 70 with quality ≥ 60, WARN ≥ 45 with quality ≥ 50, INCONCLUSIVE when quality < 50, PASS otherwise.
+- Flags now come from the subscores with severity tagging, so you can see which signal triggered the verdict.
+- Added `--verbose` / `-v` to print every per-feature subscore.
+- Split the 1100-line `spectrogram.py` into a flat `spectro/` package (`cli.py`, `audio.py`, `dynamics.py`, `spectral.py`, `verdict.py`, `plotting.py`, `reporting.py`, `dataclasses_.py`, plus a `commands/` subpackage). Root `spectrogram.py` is now a six-line wrapper for backwards compatibility.
+- All heuristic magic numbers (~50 of them) now live in a frozen `Thresholds` dataclass.
+- Module is importable without side effects now, so `import spectro.spectral` works in notebooks and tests.
+
+### Added
+
+- `--verbose` / `-v` flag for per-feature subscore breakdown in `--detect` mode.
+- `lossy_score`, `quality_score`, `subscores`, `edge_jitter_hz`, `rolloff_85_var_hz`, `max_slope_db_per_khz`, `band_ratio_db` in the JSON report.
+
+### Removed
+
+- `transcode_suspected` field (was set but never read).
+- `confidence` / `confidence_score` fields. v1.4.5 changelog claimed these were gone, they weren't. They are now.
+- Module-level argparse + `sys.exit` block at top of `spectrogram.py`.
+
+### Performance improvements
+
+- `analyze_time_windows` slices the existing STFT frames along the time axis instead of recomputing a fresh STFT per 5-second window. Saves ~60 redundant FFTs on a 5-minute track.
+- `active_band_edge` vectorized, replaced the per-frame Python loop with NumPy ops.
+- Matplotlib import is lazy now, only loads when actually plotting.
+
+### Fixes
+
+- FAIL plot title was identical to WARN, fixed.
+- Duplicate argparse parser (one at module top, one inside `main()`) consolidated into a single `build_parser()`.
+- Duplicate audio-magic check consolidated into a single `looks_like_audio(path)` helper.
+- JSON flags are now structured `{severity, name, detail}` objects instead of pre-formatted strings.
+- `_analyze_channel` returns a `ChannelAnalysis` dataclass instead of an 8-tuple.
+- `Sxx_db` averaged across channels before driving the spectrogram + edge analysis (previously the spectrogram panel and spectrum line could disagree on mid/side-mastered stereo).
+- `classify_transcode` no longer returns a `(evidence, flags)` tuple, flags are attached to the evidence directly.
+
+
 ## v1.4.5
 
 Refactor + forensic evidence pipeline. No more codec identity claims just transcode/upsampling evidence.

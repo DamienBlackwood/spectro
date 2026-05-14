@@ -1,6 +1,6 @@
 [project]
 name = "spectro"
-version = "1.4.5"
+version = "1.5.0"
 requires-python = ">=3.8"
 dependencies = [
     "numpy",
@@ -11,10 +11,10 @@ dependencies = [
 ]
 
 [project.scripts]
-spectro = "spectrogram:main"
+spectro = "spectro.cli:main"
 
 [tool.setuptools]
-py-modules = ["spectrogram"]
+packages = ["spectro", "spectro.commands"]
 
 [build-system]
 requires = ["setuptools>=61"]
