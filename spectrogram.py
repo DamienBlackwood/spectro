@@ -252,7 +252,7 @@ def analyze_dynamics(data: np.ndarray, sr: int) -> DynamicsResult:
         peak_db=peak_db, rms_db=rms_db, crest_factor=crest_factor,
         dynamic_range=dynamic_range, dr_rating=dr_rating,
         clipped_samples=clipped_samples, clip_percentage=clip_percentage,
-        clip_times=clip_times[:10] if len(clip_times) > 0 else []
+        clip_times=clip_times[:8] if len(clip_times) > 0 else []
     )
 
 def open_file(path: str) -> None:
@@ -295,16 +295,13 @@ def load_audio(file_path: str) -> Tuple[np.ndarray, int]:
                 pass
 
 def active_band_edge(S_db: np.ndarray, freqs: np.ndarray, floor_margin_db: float = T.floor_margin_db) -> np.ndarray:
-    """Estimate highest frequency with meaningful energy per frame."""
-    edges = []
-    for frame in S_db.T:
-        noise_floor = np.percentile(frame, 10)
-        active = frame > noise_floor + floor_margin_db
-        if not np.any(active):
-            edges.append(np.nan)
-            continue
-        edges.append(freqs[np.where(active)[0][-1]])
-    return np.array(edges)
+    """Estimate highest frequency with meaningful energy per frame. Vectorized."""
+    noise_floors = np.percentile(S_db, 10, axis=0)
+    active = S_db > (noise_floors + floor_margin_db)
+    any_active = active.any(axis=0)
+    highest_idx = active.shape[0] - 1 - active[::-1, :].argmax(axis=0)
+    edges = np.where(any_active, freqs[highest_idx], np.nan)
+    return edges
 
 def band_mean(avg_db: np.ndarray, freqs: np.ndarray, low: float, high: float) -> float:
     mask = (freqs >= low) & (freqs < high)
@@ -492,7 +489,7 @@ def classify_transcode(
     sr: int,
     ultrasonic_delta: Optional[float],
     sbr_likelihood: str
-) -> Tuple[TranscodeEvidence, List[EvidenceFlag]]:
+) -> TranscodeEvidence:
     flags: List[EvidenceFlag] = []
     
     if sr > T.high_sample_rate_hz:
@@ -560,7 +557,7 @@ def classify_transcode(
         high_band_db=high_band_db,
         near_nyquist_db=near_nyquist_db,
         noise_floor=noise_floor,
-        suspicious_flags=[],
+        suspicious_flags=flags,
         edge_p10=0.0,
         edge_p50=0.0,
         edge_p90=0.0,
@@ -570,7 +567,7 @@ def classify_transcode(
         active_frames_pct=0.0,
         suspicious_windows=[],
     )
-    return evidence, flags
+    return evidence
 
 def analyze_transcode_evidence(data: np.ndarray, sr: int) -> SpectralAnalysisResult:
     if data.ndim == 1:
@@ -584,24 +581,23 @@ def analyze_transcode_evidence(data: np.ndarray, sr: int) -> SpectralAnalysisRes
     
     shelf_rank = {'hard': 0, 'medium': 1, 'soft': 2, 'none': 3}
     channel_results.sort(key=lambda r: (shelf_rank.get(r.shelf_type, 3), r.cutoff_freq))
-    primary = channel_results[0]
-    cutoff_freq = primary.cutoff_freq
-    shelf_type = primary.shelf_type
-    sbr_likelihood = primary.sbr_likelihood
-    frequencies = primary.frequencies
-    times_decim = primary.times
-    Sxx_db = primary.Sxx_db
+    worst_channel = channel_results[0]
+    cutoff_freq = worst_channel.cutoff_freq
+    shelf_type = worst_channel.shelf_type
+    sbr_likelihood = worst_channel.sbr_likelihood
+    frequencies = worst_channel.frequencies
+    times_decim = worst_channel.times
 
     all_avg_db = np.array([r.avg_db for r in channel_results])
     avg_db = np.mean(all_avg_db, axis=0)
+    Sxx_db = np.mean(np.array([r.Sxx_db for r in channel_results]), axis=0)
 
     noise_floor = np.percentile(avg_db, 5)
     nyquist = sr / 2
 
-    Sxx_db_primary = primary.Sxx_db
-    edges_all = active_band_edge(Sxx_db_primary, frequencies, floor_margin_db=T.floor_margin_db)
-    
-    active_mask = get_active_frames(Sxx_db_primary, frequencies, noise_floor, nyquist)
+    edges_all = active_band_edge(Sxx_db, frequencies, floor_margin_db=T.floor_margin_db)
+
+    active_mask = get_active_frames(Sxx_db, frequencies, noise_floor, nyquist)
     active_frames_pct = float(np.mean(active_mask)) if len(active_mask) > 0 else 0.0
     valid_edges = edges_all[~np.isnan(edges_all) & active_mask] if np.any(active_mask) else edges_all[~np.isnan(edges_all)]
     
@@ -636,11 +632,11 @@ def analyze_transcode_evidence(data: np.ndarray, sr: int) -> SpectralAnalysisRes
             ultrasonic_delta = ultrasonic_peak - noise_floor
     
     suspicious_windows = analyze_time_windows(
-        primary.Zxx_full, primary.times_full, primary.hop,
+        worst_channel.Zxx_full, worst_channel.times_full, worst_channel.hop,
         sr, frequencies, nyquist, noise_floor,
     )
     
-    evidence, flags = classify_transcode(
+    evidence = classify_transcode(
         cutoff_freq=cutoff_freq,
         shelf_type=shelf_type,
         hard_cutoff=hard_cutoff,
@@ -702,7 +698,6 @@ def analyze_transcode_evidence(data: np.ndarray, sr: int) -> SpectralAnalysisRes
     elif cutoff_freq < T.low_cutoff_hz and hard_cutoff and sbr_likelihood == "none":
         transcode_warning = f"Low cutoff ({cutoff_freq:.0f} Hz) suggests heavily compressed source"
     
-    evidence.suspicious_flags.extend(flags)
     
     return SpectralAnalysisResult(
         profile=best_profile,
@@ -727,13 +722,15 @@ def print_limitations():
     print("    • Some true lossless masters naturally lack high-frequency content.")
     print("    • Final confirmation requires trusted source metadata.")
 
-def build_json_report(res: SpectralAnalysisResult, container_codec: str, container_sr: str, container_bitrate: Optional[str]) -> dict:
+def build_json_report(res: SpectralAnalysisResult, container_codec: str, container_sr: str,
+                      container_bitrate: Optional[str], container_bit_depth: Optional[str] = None) -> dict:
     return {
         "verdict": res.evidence.verdict,
         "explanation": res.evidence.explanation,
         "container_codec": container_codec,
         "container_sample_rate_hz": int(container_sr) if container_sr.isdigit() else None,
         "container_bitrate": container_bitrate,
+        "container_bit_depth": container_bit_depth,
         "nyquist_hz": res.nyquist,
         "hard_cutoff": res.evidence.hard_cutoff,
         "strongest_drop_hz": res.evidence.best_drop_freq,
@@ -746,6 +743,8 @@ def build_json_report(res: SpectralAnalysisResult, container_codec: str, contain
         "high_band_db": res.evidence.high_band_db,
         "near_nyquist_db": res.evidence.near_nyquist_db,
         "sbr_likelihood": res.evidence.sbr_likelihood,
+        "ultrasonic_delta_db": res.ultrasonic_delta,
+        "transcode_warning": res.transcode_warning,
         "suspicious_windows": res.evidence.suspicious_windows,
         "closest_resemblance": res.profile,
         "flags": [asdict(f) for f in res.evidence.suspicious_flags],
@@ -800,8 +799,8 @@ def main():
         print(f"  Rating:          {dynamics.dr_rating.upper()}")
         print(f"  Clipped samples: {dynamics.clipped_samples:,} ({dynamics.clip_percentage:.4f}%)")
         if len(dynamics.clip_times) > 0:
-            times_str = ", ".join([f"{t:.2f}s" for t in dynamics.clip_times[:5]])
-            print(f"  Clip locations:  {times_str}{'...' if len(dynamics.clip_times) > 5 else ''}")
+            times_str = ", ".join([f"{t:.2f}s" for t in dynamics.clip_times])
+            print(f"  Clip locations:  {times_str}")
         sys.exit(0)
     
     if args.detect:
@@ -820,8 +819,7 @@ def main():
         t0 = time.perf_counter()
         
         res = analyze_transcode_evidence(data, sr)
-        detect_time = time.perf_counter() - t0
-        
+
         print(f"\n{'='*50}")
         print("SPECTRAL ANALYSIS")
         print(f"{'='*50}")
@@ -896,7 +894,7 @@ def main():
         if args.json is not None:
             json_name = args.json if args.json else f"{Path(file_path).stem}_analysis.json"
             json_path = str(outputs_dir / json_name)
-            report = build_json_report(res, container_codec, container_sr, container_bitrate)
+            report = build_json_report(res, container_codec, container_sr, container_bitrate, container_bit_depth)
             with open(json_path, 'w') as jf:
                 json.dump(report, jf, indent=2)
             print(f"\n  JSON report saved: {json_path}")
