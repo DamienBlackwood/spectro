@@ -83,6 +83,16 @@ class DynamicsResult:
     clip_times: List[float]
 
 @dataclass
+class ChannelAnalysis:
+    cutoff_freq: float
+    shelf_type: str
+    sbr_likelihood: str
+    frequencies: np.ndarray
+    times: np.ndarray
+    Sxx_db: np.ndarray
+    avg_db: np.ndarray
+
+@dataclass
 class EvidenceFlag:
     severity: str  # info, low, medium, high, critical
     name: str
@@ -98,7 +108,7 @@ class TranscodeEvidence:
     high_band_db: float
     near_nyquist_db: float
     noise_floor: float
-    suspicious_flags: List[str]
+    suspicious_flags: List[EvidenceFlag]
     edge_p10: float
     edge_p50: float
     edge_p90: float
@@ -252,7 +262,7 @@ def get_active_frames(Sxx_db: np.ndarray, freqs: np.ndarray, noise_floor: float,
     active = (frame_mean > noise_floor + 12) & (high_band_energy > noise_floor + 6)
     return active
 
-def _analyze_channel(data_ch: np.ndarray, sr: int) -> Tuple[float, str, str, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+def _analyze_channel(data_ch: np.ndarray, sr: int) -> ChannelAnalysis:
     """Analyze a single channel and return cutoff, shelf, SBR likelihood, and spectral data."""
     nperseg = 8192
     noverlap = 6144
@@ -337,7 +347,15 @@ def _analyze_channel(data_ch: np.ndarray, sr: int) -> Tuple[float, str, str, np.
                         if upper_flatness > lower_flatness * 1.3:
                             sbr_likelihood = "likely"
     
-    return cutoff_freq, shelf_type, sbr_likelihood, frequencies, times_decim, Sxx_db, avg_db, smoothed
+    return ChannelAnalysis(
+        cutoff_freq=cutoff_freq,
+        shelf_type=shelf_type,
+        sbr_likelihood=sbr_likelihood,
+        frequencies=frequencies,
+        times=times_decim,
+        Sxx_db=Sxx_db,
+        avg_db=avg_db,
+    )
 
 def spectral_flatness(power_band: np.ndarray) -> float:
     geometric = np.exp(np.mean(np.log(power_band + 1e-12)))
@@ -494,23 +512,23 @@ def analyze_transcode_evidence(data: np.ndarray, sr: int) -> SpectralAnalysisRes
     for ch in channels:
         channel_results.append(_analyze_channel(ch, sr))
     
-    def suspicion_key(res):
-        cf, st, *_ = res
-        shelf_rank = {'hard': 0, 'medium': 1, 'soft': 2, 'none': 3}
-        return (shelf_rank.get(st, 3), cf)
-    
-    channel_results.sort(key=suspicion_key)
+    shelf_rank = {'hard': 0, 'medium': 1, 'soft': 2, 'none': 3}
+    channel_results.sort(key=lambda r: (shelf_rank.get(r.shelf_type, 3), r.cutoff_freq))
     primary = channel_results[0]
-    cutoff_freq, shelf_type, sbr_likelihood, frequencies, times_decim, Sxx_db, avg_db, smoothed = primary
-    
-    all_avg_db = np.array([r[6] for r in channel_results])
+    cutoff_freq = primary.cutoff_freq
+    shelf_type = primary.shelf_type
+    sbr_likelihood = primary.sbr_likelihood
+    frequencies = primary.frequencies
+    times_decim = primary.times
+    Sxx_db = primary.Sxx_db
+
+    all_avg_db = np.array([r.avg_db for r in channel_results])
     avg_db = np.mean(all_avg_db, axis=0)
-    smoothed = gaussian_filter1d(avg_db, sigma=3)
-    
+
     noise_floor = np.percentile(avg_db, 5)
     nyquist = sr / 2
-    
-    _, _, _, _, _, Sxx_db_primary, _, _ = channel_results[0]
+
+    Sxx_db_primary = primary.Sxx_db
     edges_all = active_band_edge(Sxx_db_primary, frequencies, floor_margin_db=18)
     
     active_mask = get_active_frames(Sxx_db_primary, frequencies, noise_floor, nyquist)
@@ -612,8 +630,7 @@ def analyze_transcode_evidence(data: np.ndarray, sr: int) -> SpectralAnalysisRes
     elif cutoff_freq < 14000 and hard_cutoff and sbr_likelihood == "none":
         transcode_warning = f"Low cutoff ({cutoff_freq:.0f} Hz) suggests heavily compressed source"
     
-    for f in flags:
-        evidence.suspicious_flags.append(f"[{f.severity.upper()}] {f.name}: {f.detail}")
+    evidence.suspicious_flags.extend(flags)
     
     return SpectralAnalysisResult(
         profile=best_profile,
@@ -659,10 +676,7 @@ def build_json_report(res: SpectralAnalysisResult, container_codec: str, contain
         "sbr_likelihood": res.evidence.sbr_likelihood,
         "suspicious_windows": res.evidence.suspicious_windows,
         "closest_resemblance": res.profile,
-        "flags": [
-            {"severity": f.split(']')[0].strip('['), "text": f.split(']', 1)[1].strip() if ']' in f else f}
-            for f in res.evidence.suspicious_flags
-        ],
+        "flags": [asdict(f) for f in res.evidence.suspicious_flags],
     }
 
 def main():
@@ -789,7 +803,7 @@ def main():
         if len(res.evidence.suspicious_flags) > 0:
             print(f"\n  Flags:")
             for flag in res.evidence.suspicious_flags:
-                print(f"    • {flag}")
+                print(f"    • [{flag.severity.upper()}] {flag.name}: {flag.detail}")
         
         if len(res.evidence.suspicious_windows) > 0:
             print(f"\n  Suspicious time windows:")
