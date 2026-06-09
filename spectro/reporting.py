@@ -11,11 +11,11 @@ def fmt_time(s: float) -> str:
 
 
 def print_limitations():
-    print("\n  Limitations:")
-    print("    • This tool cannot prove lossless provenance.")
-    print("    • High-bitrate MP3/AAC/Opus can resemble lossless in spectral analysis.")
-    print("    • Some true lossless masters naturally lack high-frequency content.")
-    print("    • Final confirmation requires trusted source metadata.")
+    print("\n  Keep in mind:")
+    print("    • this can't PROVE a file is lossless")
+    print("    • high-bitrate MP3/AAC/Opus can look squeaky clean here")
+    print("    • plenty of genuine masters just don't have much top end")
+    print("    • real proof needs a trusted source, not a spectrogram")
 
 
 def build_json_report(res: SpectralAnalysisResult, container_codec: str, container_sr: str,
@@ -34,6 +34,7 @@ def build_json_report(res: SpectralAnalysisResult, container_codec: str, contain
         "active_edge_p10_hz": res.evidence.edge_p10,
         "active_edge_p50_hz": res.evidence.edge_p50,
         "active_edge_p90_hz": res.evidence.edge_p90,
+        "active_edge_p97_hz": res.evidence.edge_p97,
         "cutoff_persistence": res.evidence.cutoff_persistence,
         "active_frames_pct": res.evidence.active_frames_pct,
         "high_band_db": res.evidence.high_band_db,

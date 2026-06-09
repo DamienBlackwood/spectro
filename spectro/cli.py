@@ -1,3 +1,7 @@
+# time the heavy imports so we can hint on cold starts
+import time as _t
+_import_start = _t.perf_counter()
+
 import argparse
 import os
 import sys
@@ -12,25 +16,61 @@ from .commands.info import cmd_info
 from .dynamics import analyze_dynamics
 from .reporting import fmt_time
 
-# Track cold-import cost to surface install hint
-import time as _t
-_import_start = _t.perf_counter()
-import numpy as _np  
-import soundfile as _sf 
 _import_time = _t.perf_counter() - _import_start
+
+VERSION_ART = r"""
+                ░▒▓█ spectro █▓▒░
+      ┌──────────────────────────────────┐
+    ↑ │      ·   ·       ·    ·      ·   │ ← nothing up here? sus.
+    f │ ╌╌╌╌╌╌╌╌╌╌╌╌ cutoff ╌╌╌╌╌╌╌╌╌╌╌╌ │
+    r │ ░▒▓▒░▒▒▓▒▒░░▒▒▓▒░▒▒▒▓▒░▒▒░▒▓▒▒░▒ │
+    e │ ▓▓█▓▓▒▓▓▓█▓▓▓▒▓▓███▓▓▒▓▓▓█▓▓▓▒▓▓ │
+    q │ ████████████████████████████████ │
+      └──────────────────────────────────┘
+                     time →
+"""
+
+
+def print_version() -> None:
+    import platform
+    from importlib.metadata import PackageNotFoundError, version as pkg_version
+
+    from . import __version__
+
+    def v(name: str) -> str:
+        try:
+            return pkg_version(name)
+        except PackageNotFoundError:
+            return "?"
+
+    print(VERSION_ART)
+    print(f"    spectro v{__version__} - spectrograms + lossy-source forensics")
+    print(f"    python {platform.python_version()} · numpy {v('numpy')} · scipy {v('scipy')}"
+          f" · soundfile {v('soundfile')} · matplotlib {v('matplotlib')}")
+    print()
+
+
+def print_intro() -> None:
+    print("\nspectro - audio spectrograms + lossy-source detection\n")
+    print('  spectro "song.flac"               render spectrogram')
+    print('  spectro "song.flac" --detect      lossy-source forensics')
+    print('  spectro a.flac --compare b.flac   null-test comparison')
+    print('  spectro --help                    everything else\n')
 
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Spectrogram Generator")
-    p.add_argument("file_path", nargs="?", help="Input audio file")
+    p.add_argument("file_path", nargs="*", help="Input audio file(s)")
     p.add_argument("-o", "--output", help="Output filename")
     p.add_argument("--detect", action="store_true", help="Spectral authenticity / transcode-evidence analysis")
+    p.add_argument("-p", "--preview", action="store_true", help="Render spectrogram in the terminal (no PNG)")
     p.add_argument("--compare", metavar="FILE", help="Compare with another audio file")
     p.add_argument("--log", action="store_true", help="Log frequency axis")
     p.add_argument("--no-open", dest="no_open", action="store_true", help="Don't auto-open output file")
     p.add_argument("--info", action="store_true", help="Show file info only")
-    p.add_argument("--json", nargs="?", const=None, metavar="FILE", help="Write machine-readable JSON report")
-    p.add_argument("--verbose", "-v", action="store_true", help="Print per-feature subscores in detect mode")
+    p.add_argument("--json", nargs="?", const="", metavar="FILE", help="Write machine-readable JSON report")
+    p.add_argument("--verbose", action="store_true", help="Print per-feature subscores in detect mode")
+    p.add_argument("-v", "--version", action="store_true", help="Show version info")
     return p
 
 
@@ -39,12 +79,34 @@ def main():
 
     args = build_parser().parse_args()
 
-    if args.file_path is None:
-        args.file_path = input("Audio file: ").strip()
+    if args.version:
+        print_version()
+        return
 
-    file_path = args.file_path.strip().strip('"\'')
+    if not args.file_path:
+        print_intro()
+        try:
+            entered = input("Audio file (or just hit enter to bail): ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            return
+        if not entered:
+            return
+        args.file_path = [entered]
+
+    if len(args.file_path) > 1:
+        if args.detect:
+            from .commands.batch import cmd_batch
+            cmd_batch(args, args.file_path, script_start)
+        else:
+            print("Multiple files only work in --detect batch mode for now, e.g.:")
+            print("  spectro *.flac --detect")
+            sys.exit(1)
+        return
+
+    file_path = args.file_path[0].strip().strip('"\'')
     if not os.path.isfile(file_path):
-        print(f"Error: '{Path(file_path).name}' is not an audio file", file=sys.stderr)
+        print(f"Error: '{Path(file_path).name}' not found", file=sys.stderr)
         sys.exit(1)
 
     if not looks_like_audio(Path(file_path)):
@@ -57,7 +119,7 @@ def main():
     print(f"\n{Path(file_path).name} ({file_size/1024/1024:.1f} MB)")
 
     if _import_time > 3:
-        print("      (installed numpy/scipy, the next launches will be quicker!)")
+        print("      (cold start, next launches will be quicker!)")
 
     print("[1/3] Loading...")
     t0 = time.perf_counter()
@@ -76,6 +138,11 @@ def main():
 
     if args.info:
         cmd_info(dynamics)
+        return
+
+    if args.preview:
+        from .commands.preview import cmd_preview
+        cmd_preview(data_display, sr, script_start)
         return
 
     if args.detect:

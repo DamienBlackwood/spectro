@@ -232,12 +232,24 @@ def _build_evidence_shell(
 
 
 def analyze_transcode_evidence(data: np.ndarray, sr: int) -> SpectralAnalysisResult:
+    # codec lowpass is global, the middle 150s is plenty to find it
+    max_n = int(T.detect_max_seconds * sr)
+    t_offset = 0.0
+    if len(data) > max_n:
+        start = (len(data) - max_n) // 2
+        data = data[start:start + max_n]
+        t_offset = start / sr
+
     if data.ndim == 1:
         channels = [data]
     else:
         channels = [data[:, ch] for ch in range(data.shape[1])]
 
     channel_results = [_analyze_channel(ch, sr) for ch in channels]
+    if t_offset:
+        for r in channel_results:
+            r.times = r.times + t_offset
+            r.times_full = r.times_full + t_offset
 
     shelf_rank = {'hard': 0, 'medium': 1, 'soft': 2, 'none': 3}
     channel_results.sort(key=lambda r: (shelf_rank.get(r.shelf_type, 3), r.cutoff_freq))
@@ -261,9 +273,17 @@ def analyze_transcode_evidence(data: np.ndarray, sr: int) -> SpectralAnalysisRes
     active_frames_pct = float(np.mean(active_mask)) if len(active_mask) > 0 else 0.0
     valid_edges = edges_all[~np.isnan(edges_all) & active_mask] if np.any(active_mask) else edges_all[~np.isnan(edges_all)]
 
-    edge_p10 = float(np.nanpercentile(edges_all, 10))
-    edge_p50 = float(np.nanpercentile(edges_all, 50))
-    edge_p90 = float(np.nanpercentile(edges_all, 90))
+    # percentiles over active frames only, silence drags the edge down
+    finite_edges = edges_all[~np.isnan(edges_all)]
+    edge_src = valid_edges if len(valid_edges) >= 8 else finite_edges
+    if len(edge_src) > 0:
+        edge_p10 = float(np.percentile(edge_src, 10))
+        edge_p50 = float(np.percentile(edge_src, 50))
+        edge_p90 = float(np.percentile(edge_src, 90))
+        # p97 ~ codec ceiling. p90 tracks content, quiet songs sit way under the lowpass
+        edge_p97 = float(np.percentile(edge_src, 97))
+    else:
+        edge_p10 = edge_p50 = edge_p90 = edge_p97 = 0.0
 
     high_band_db = band_mean(avg_db, frequencies, T.high_band_high_hz, min(20000, nyquist * T.nyquist_high_band_cap))
     near_nyquist_db = band_mean(avg_db, frequencies, nyquist * T.nyquist_near_low, nyquist * T.nyquist_near_high)
@@ -296,8 +316,10 @@ def analyze_transcode_evidence(data: np.ndarray, sr: int) -> SpectralAnalysisRes
         sr, frequencies, nyquist, noise_floor,
     )
 
-    slope_center = best_drop_freq if hard_cutoff and best_drop_freq > 0 else edge_p50
-    max_slope = verdict_mod.compute_slope_db_per_khz(avg_db, frequencies, slope_center)
+    # steepest drop up to just past the edge. codec shelves live below ~21k,
+    # anything steeper above that is anti-alias or natural content edge
+    slope_hi = min(edge_p97 + 1500, 21000.0, nyquist * 0.95)
+    max_slope = verdict_mod.steepest_slope_db_per_khz(avg_db, frequencies, T.cutoff_search_start_hz, slope_hi)
     edge_jitter = verdict_mod.compute_edge_jitter(edges_all, active_mask)
     rolloff_var = verdict_mod.compute_rolloff_85_variance(Sxx_db, frequencies)
     band_ratio = verdict_mod.compute_band_ratio_db(avg_db, frequencies)
@@ -306,7 +328,7 @@ def analyze_transcode_evidence(data: np.ndarray, sr: int) -> SpectralAnalysisRes
     rms_db = 20 * np.log10(rms_overall + 1e-10)
 
     lossy_score, subscores = verdict_mod.compute_lossy_score(
-        edge_p90=edge_p90, slope_db_per_khz=max_slope, jitter_hz=edge_jitter,
+        edge_p90=edge_p97, slope_db_per_khz=max_slope, jitter_hz=edge_jitter,
         band_ratio_db=band_ratio, rolloff_var_hz=rolloff_var,
         sbr_likelihood=sbr_likelihood, persistence=cutoff_persistence,
         hard_cutoff=hard_cutoff, nyquist=nyquist,
@@ -328,6 +350,7 @@ def analyze_transcode_evidence(data: np.ndarray, sr: int) -> SpectralAnalysisRes
     evidence.edge_p10 = edge_p10
     evidence.edge_p50 = edge_p50
     evidence.edge_p90 = edge_p90
+    evidence.edge_p97 = edge_p97
     evidence.best_drop_freq = best_drop_freq
     evidence.max_drop_db = max_drop
     evidence.active_frames_pct = active_frames_pct
@@ -371,14 +394,14 @@ def analyze_transcode_evidence(data: np.ndarray, sr: int) -> SpectralAnalysisRes
 
     transcode_warning = None
     if sr > T.high_sample_rate_hz and cutoff_freq < T.upsample_cutoff_hz and hard_cutoff:
-        transcode_warning = f"High sample rate ({sr} Hz) but cutoff at {cutoff_freq:.0f} Hz. It could likely be an upsampled lossy"
+        transcode_warning = f"{sr} Hz container but the cutoff sits at {cutoff_freq:.0f} Hz, smells like upsampled lossy"
     elif sr > T.high_sample_rate_hz and ultrasonic_delta is not None and ultrasonic_delta < T.ultrasonic_delta_threshold:
         transcode_warning = (
-            "High sample-rate file has little ultrasonic content, it could suggest a 44.1/48 kHz source "
-            "or upsampled delivery, not necessarily lossy compression"
+            f"{sr} Hz container but barely any ultrasonic content. Probably a 44.1/48 kHz source "
+            "upsampled somewhere along the way, not necessarily lossy"
         )
     elif cutoff_freq < T.low_cutoff_hz and hard_cutoff and sbr_likelihood == "none":
-        transcode_warning = f"Low cutoff ({cutoff_freq:.0f} Hz) suggests heavily compressed source"
+        transcode_warning = f"cutoff down at {cutoff_freq:.0f} Hz points to a heavily compressed source"
 
     return SpectralAnalysisResult(
         profile=best_profile,

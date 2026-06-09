@@ -14,7 +14,7 @@ import numpy as np
 
 from .dataclasses_ import EvidenceFlag, T
 
-# I'll leave comments in here because it can help if anyone wants to audit it, please keep in mind I'm still learning this so rookie mistakes **WILL** be made!
+# I'll leave comments in here because it can help if anyone wants to audit it, please keep in mind I'm still learning this so rookie mistakes WILL ABSOLUTELY be made!
 
 def _score_edge_p90(edge_p90: float, nyquist: float) -> float:
     """Distance of p90 edge from nearest codec cutoff anchor."""
@@ -124,6 +124,9 @@ def compute_lossy_score(
         "sbr":         _score_sbr(sbr_likelihood),
         "persistence": _score_persistence(persistence, hard_cutoff),
     }
+    # jitter only counts when the edge sits somewhere codec-like, analog masters can hold a dead-stable natural rolloff
+    if subs["edge"] == 0.0 and subs["slope"] == 0.0:
+        subs["jitter"] = min(subs["jitter"], 25.0)
     weights = {
         "edge":        T.w_edge,
         "slope":       T.w_slope,
@@ -135,6 +138,9 @@ def compute_lossy_score(
     }
     total = sum(weights.values())
     score = sum(subs[k] * weights[k] for k in subs) / total
+    # brick wall at a codec anchor that never moves = the classic signature
+    if subs["edge"] >= 80 and subs["slope"] >= 80 and subs["persistence"] >= 70:
+        score = max(score, 75.0)
     return min(100.0, max(0.0, score)), subs
 
 
@@ -175,12 +181,12 @@ def compute_quality_score(
 def decide_verdict(lossy_score: float, quality_score: float) -> Tuple[str, str]:
     """Map (lossy, quality) → (verdict, explanation)."""
     if quality_score < T.quality_required:
-        return "INCONCLUSIVE", "data quality insufficient. The track may be silent, narrowband, or analog source"
+        return "INCONCLUSIVE", "not enough usable signal to judge, could be silent, narrowband or analog"
     if lossy_score >= T.fail_score:
-        return "FAIL", "strong lossy transcode evidence"
+        return "FAIL", "this looks transcoded"
     if lossy_score >= T.warn_score:
-        return "WARN", "moderate lossy evidence, It could be a possible transcode or aggressive mastering"
-    return "PASS", "no significant lossy transcode evidence"
+        return "WARN", "some lossy traits here, possible transcode or just heavy-handed mastering"
+    return "PASS", "no lossy fingerprints found"
 
 
 def build_score_flags(subscores: Dict[str, float], lossy_score: float,
@@ -215,7 +221,23 @@ def build_score_flags(subscores: Dict[str, float], lossy_score: float,
     return flags
 
 
-# - Feature Extraction Helpers - 
+# - Feature Extraction Helpers -
+def steepest_slope_db_per_khz(avg_db: np.ndarray, freqs: np.ndarray,
+                              lo_hz: float, hi_hz: float, span_hz: float = 250.0) -> float:
+    """Steepest drop over a 250 Hz span. Codec shelves are near-vertical,
+    a symmetric regression window dilutes them with passband."""
+    from scipy.ndimage import gaussian_filter1d
+    bin_hz = freqs[1] - freqs[0]
+    k = max(1, int(span_hz / bin_hz))
+    i0 = np.searchsorted(freqs, lo_hz)
+    i1 = np.searchsorted(freqs, hi_hz)
+    if i1 - i0 < k + 4:
+        return 0.0
+    smoothed = gaussian_filter1d(avg_db, sigma=3)
+    diffs = (smoothed[i0 + k:i1] - smoothed[i0:i1 - k]) / (k * bin_hz) * 1000.0
+    return float(np.min(diffs))
+
+
 def compute_slope_db_per_khz(avg_db: np.ndarray, freqs: np.ndarray,
                               center_hz: float, window_hz: float = None) -> float:
     """Linear regression slope (dB/kHz) over transition band centered on center_hz."""
@@ -254,11 +276,9 @@ def compute_rolloff_85_variance(Sxx_db: np.ndarray, freqs: np.ndarray) -> float:
     total_per_frame = np.sum(S_lin, axis=0) + 1e-12
     cum = np.cumsum(S_lin, axis=0)
     norm = cum / total_per_frame[np.newaxis, :]
-    # For each frame, find first bin where cumulative reaches 0.85
-    rolloffs = np.zeros(Sxx_db.shape[1])
-    for t in range(Sxx_db.shape[1]):
-        idx = np.searchsorted(norm[:, t], 0.85)
-        rolloffs[t] = freqs[min(idx, len(freqs) - 1)]
+    # For each frame, first bin where cumulative reaches 0.85
+    idx = np.argmax(norm >= 0.85, axis=0)
+    rolloffs = freqs[np.minimum(idx, len(freqs) - 1)]
     return float(np.std(rolloffs))
 
 

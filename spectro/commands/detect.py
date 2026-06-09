@@ -7,9 +7,11 @@ import numpy as np
 
 from ..audio import open_file
 from ..dataclasses_ import T
-from ..plotting import lazy_pyplot
+from ..forensics import effective_bit_depth, stereo_correlation
+from ..plotting import ACCENT, MUTED, ORANGE, TEXT, VERDICT_COLORS, lazy_pyplot
 from ..reporting import build_json_report, fmt_time, print_limitations
 from ..spectral import analyze_transcode_evidence
+from ..term import GREEN, RED, YELLOW, bar, paint, severity_color, verdict_color
 
 
 def _probe_container(file_path: str):
@@ -63,11 +65,26 @@ def cmd_detect(args, file_path: str, data: np.ndarray, sr: int,
     if container_bitrate:
         print(f"  Bitrate:           {container_bitrate}")
 
-    print(f"\n  Spectral verdict:  {res.evidence.verdict} - {res.evidence.explanation}")
-    print(f"  Lossy evidence:    {res.evidence.lossy_score:.0f}/100")
-    print(f"  Data quality:      {res.evidence.quality_score:.0f}/100")
+    bit_depth_check = effective_bit_depth(file_path)
+    if bit_depth_check:
+        claimed, effective = bit_depth_check
+        if effective <= 16 < claimed:
+            print(f"  Effective depth:   {paint(f'{effective}-bit', YELLOW, bold=True)} (container claims {claimed}-bit, padded?)")
+        else:
+            print(f"  Effective depth:   {effective}-bit")
 
-    print(f"\n  Active edge:       p10={res.evidence.edge_p10:.0f}  p50={res.evidence.edge_p50:.0f}  p90={res.evidence.edge_p90:.0f} Hz")
+    ch_corr = stereo_correlation(data)
+    if ch_corr is not None and ch_corr > 0.999:
+        print(f"  Stereo image:      {paint('channels nearly identical', YELLOW)} (corr {ch_corr:.4f}, mono upmix?)")
+
+    v = res.evidence.verdict
+    print(f"\n  Spectral verdict:  {paint(v, verdict_color(v), bold=True)} - {res.evidence.explanation}")
+    lossy_color = RED if res.evidence.lossy_score >= T.fail_score else YELLOW if res.evidence.lossy_score >= T.warn_score else GREEN
+    print(f"  Lossy evidence:    {bar(res.evidence.lossy_score, color=lossy_color)} {res.evidence.lossy_score:.0f}/100")
+    quality_color = GREEN if res.evidence.quality_score >= T.quality_required else YELLOW
+    print(f"  Data quality:      {bar(res.evidence.quality_score, color=quality_color)} {res.evidence.quality_score:.0f}/100")
+
+    print(f"\n  Active edge:       p10={res.evidence.edge_p10:.0f}  p50={res.evidence.edge_p50:.0f}  p90={res.evidence.edge_p90:.0f}  p97={res.evidence.edge_p97:.0f} Hz")
     print(f"  Edge jitter:       {res.evidence.edge_jitter_hz:.0f} Hz (MAD)")
     print(f"  Rolloff variance:  {res.evidence.rolloff_85_var_hz:.0f} Hz (std)")
     print(f"  Filter slope:      {res.evidence.max_slope_db_per_khz:.1f} dB/kHz")
@@ -82,12 +99,13 @@ def cmd_detect(args, file_path: str, data: np.ndarray, sr: int,
     if args.verbose and res.evidence.subscores:
         print(f"\n  Subscores:")
         for name, val in sorted(res.evidence.subscores.items(), key=lambda x: -x[1]):
-            print(f"    {name:14} {val:5.1f}/100")
+            print(f"    {name:14} {bar(val, width=15)} {val:5.1f}/100")
 
     if len(res.evidence.suspicious_flags) > 0:
         print(f"\n  Flags:")
         for flag in res.evidence.suspicious_flags:
-            print(f"    • [{flag.severity.upper()}] {flag.name}: {flag.detail}")
+            sev = paint(f"[{flag.severity.upper()}]", severity_color(flag.severity), bold=True)
+            print(f"    • {sev} {flag.name}: {flag.detail}")
 
     if len(res.evidence.suspicious_windows) > 0:
         print(f"\n  Suspicious time windows:")
@@ -96,24 +114,34 @@ def cmd_detect(args, file_path: str, data: np.ndarray, sr: int,
         if len(res.evidence.suspicious_windows) > 8:
             print(f"    ... and {len(res.evidence.suspicious_windows) - 8} more")
 
-    print(f"\n  Closest cutoff resemblance: {res.profile.upper()}")
+    no_cutoff = res.evidence.verdict == "PASS" and not res.evidence.hard_cutoff
+    if no_cutoff:
+        print(f"\n  Closest cutoff resemblance: none (no lossy-looking cutoff shape)")
+    else:
+        print(f"\n  Closest cutoff resemblance: {res.profile.upper()}")
 
     if res.transcode_warning:
-        print(f"\n  ⚠ {res.transcode_warning}")
+        print(f"\n  {paint('⚠ ' + res.transcode_warning, YELLOW)}")
 
     print_limitations()
 
     print(f"{'='*50}")
 
-    print("\nProfile resemblance scores:")
-    sorted_scores = sorted(res.scores.items(), key=lambda x: x[1], reverse=True)[:5]
-    for codec, score in sorted_scores:
-        print(f"  {codec:15} {score:3}/100")
+    # only rank codecs when there's an actual cutoff to compare against
+    if not no_cutoff:
+        print("\nProfile resemblance scores:")
+        sorted_scores = sorted(res.scores.items(), key=lambda x: x[1], reverse=True)[:5]
+        for codec, score in sorted_scores:
+            print(f"  {codec:15} {score:3}/100")
 
     if args.json is not None:
         json_name = args.json if args.json else f"{Path(file_path).stem}_analysis.json"
         json_path = str(outputs_dir / json_name)
         report = build_json_report(res, container_codec, container_sr, container_bitrate, container_bit_depth)
+        report["effective_bit_depth"] = bit_depth_check[1] if bit_depth_check else None
+        report["stereo_correlation"] = ch_corr
+        if no_cutoff:
+            report["closest_resemblance"] = None
         with open(json_path, 'w') as jf:
             json.dump(report, jf, indent=2)
         print(f"\n  JSON report saved: {json_path}")
@@ -126,12 +154,17 @@ def cmd_detect(args, file_path: str, data: np.ndarray, sr: int,
     freqs = res.frequencies
     spectrum = res.avg_spectrum_db
     nyquist = res.nyquist
+    vcolor = VERDICT_COLORS.get(res.evidence.verdict, TEXT)
 
-    ax1.plot(freqs, spectrum, 'b-', linewidth=0.8, alpha=0.7, label='Spectrum')
-    ax1.axvline(x=res.cutoff_freq, color='r', linestyle='--', label=f"Cutoff: {res.cutoff_freq:.0f} Hz")
+    fig.suptitle(f"{Path(file_path).name}", fontsize=11, x=0.07, ha='left', color=TEXT)
+    fig.text(0.93, 0.982, f"{res.evidence.verdict}  lossy {res.evidence.lossy_score:.0f}/100  quality {res.evidence.quality_score:.0f}/100",
+             ha='right', fontsize=10, color=vcolor, weight='bold')
+
+    ax1.plot(freqs, spectrum, color=ACCENT, linewidth=0.8, alpha=0.85, label='Spectrum')
+    ax1.axvline(x=res.cutoff_freq, color=ORANGE, linestyle='--', label=f"Cutoff: {res.cutoff_freq:.0f} Hz")
     if sr > T.high_sample_rate_hz:
-        ax1.axvline(x=24000, color='g', linestyle=':', alpha=0.5, label='24 kHz')
-    ax1.axhline(y=res.noise_floor, color='gray', linestyle=':', alpha=0.5, label='Noise floor')
+        ax1.axvline(x=24000, color=MUTED, linestyle=':', alpha=0.7, label='24 kHz')
+    ax1.axhline(y=res.noise_floor, color=MUTED, linestyle=':', alpha=0.7, label='Noise floor')
     ax1.set_xlabel('Frequency (Hz)')
     ax1.set_ylabel('Power (dB)')
 
@@ -143,40 +176,44 @@ def cmd_detect(args, file_path: str, data: np.ndarray, sr: int,
         title = "Frequency Spectrum - No obvious lossy transcode signature"
     else:
         title = "Frequency Spectrum - Inconclusive spectral evidence"
-    ax1.set_title(title)
+    ax1.set_title(title, loc='left')
     ax1.legend(fontsize=8)
     ax1.grid(True, alpha=0.3)
     ax1.set_xlim(0, nyquist)
 
-    extent = [res.times[0], res.times[-1], freqs[0], freqs[-1]]
-    im = ax2.imshow(res.Sxx_db, aspect='auto', origin='lower', extent=extent, cmap='inferno', interpolation='bilinear')
+    # thin the freq rows for display, 4k rows is way past what the png can resolve
+    f_decim = max(1, res.Sxx_db.shape[0] // 1200)
+    Sxx_disp = res.Sxx_db[::f_decim]
+    extent = [res.times[0], res.times[-1], freqs[0], freqs[::f_decim][-1]]
+    im = ax2.imshow(Sxx_disp, aspect='auto', origin='lower', extent=extent, cmap='inferno', interpolation='bilinear')
     ax2.axhline(y=res.cutoff_freq, color='white', linestyle='--', alpha=0.7)
     if sr > T.high_sample_rate_hz:
-        ax2.axhline(y=24000, color='green', linestyle=':', alpha=0.5)
+        ax2.axhline(y=24000, color='#3ddc84', linestyle=':', alpha=0.5)
     ax2.set_xlabel('Time (s)')
     ax2.set_ylabel('Frequency (Hz)')
-    ax2.set_title('Spectrogram')
+    ax2.set_title('Spectrogram', loc='left')
     ax2.set_ylim(0, nyquist)
     plt.colorbar(im, ax=ax2, label='dB')
 
     edge_times = res.edge_times
     edge_values = res.edge_values
     valid = ~np.isnan(edge_values)
-    ax3.plot(edge_times[valid], edge_values[valid], 'c-', linewidth=0.6, alpha=0.8, label='Active edge')
-    ax3.axhline(y=res.nyquist * T.nyquist_persistence_default, color='gray', linestyle=':', alpha=0.5, label='94% Nyquist')
+    ax3.plot(edge_times[valid], edge_values[valid], color=ACCENT, linewidth=0.6, alpha=0.8, label='Active edge')
+    ax3.axhline(y=res.nyquist * T.nyquist_persistence_default, color=MUTED, linestyle=':', alpha=0.7, label='94% Nyquist')
     if res.evidence.hard_cutoff:
-        ax3.axhline(y=res.evidence.best_drop_freq, color='r', linestyle='--', alpha=0.6, label=f"Best drop: {res.evidence.best_drop_freq:.0f} Hz")
+        ax3.axhline(y=res.evidence.best_drop_freq, color=ORANGE, linestyle='--', alpha=0.7, label=f"Best drop: {res.evidence.best_drop_freq:.0f} Hz")
     ax3.set_xlabel('Time (s)')
     ax3.set_ylabel('Frequency (Hz)')
-    ax3.set_title('Active Spectral Edge Over Time')
+    ax3.set_title('Active Spectral Edge Over Time', loc='left')
     ax3.set_ylim(0, nyquist)
     ax3.legend(fontsize=8)
     ax3.grid(True, alpha=0.3)
 
-    plt.tight_layout()
+    fig.text(0.07, 0.005, "spectro", color=MUTED, fontsize=8)
+    plt.tight_layout(rect=[0, 0.01, 1, 0.97])
 
     output_path = args.output if args.output else str(outputs_dir / f"{Path(file_path).stem}_analysis.png")
-    plt.savefig(output_path, dpi=T.dpi, format=T.output_fmt)
+    plt.savefig(output_path, dpi=T.detect_dpi, format=T.output_fmt)
 
     print(f"      Saved: {output_path}")
     if not args.no_open:

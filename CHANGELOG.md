@@ -1,5 +1,38 @@
 # Changelog
 
+# v2.0.0
+
+- Accuracy: slope detection rewritten as steepest 250 Hz drop instead of a symmetric regression window, which was diluting brick walls with passband (a -172 dB/kHz mp3 shelf measured as -10.8).
+- Accuracy: cutoff candidates now every 250 Hz from 13-21.5k instead of seven hand-picked spots, hard-cutoff drop threshold 15 -> 10 dB so shelves in already-quiet top end still register.
+- Accuracy: codec matching now uses the p97 active edge (codec ceiling) instead of p90, which tracks content and sits way under the lowpass on quiet material.
+- Accuracy: classic-signature rule, brick wall at a codec anchor that persists = minimum 75 score. A real mp3-128 transcode hidden in FLAC now FAILs (was PASS 27).
+- Accuracy: slope search capped at 21 kHz so natural content edges and anti-alias filters on hi-res files stop inflating clean scores.
+- Honest limitation, validated against real transcodes: high-bitrate codecs (mp3-320, opus-128, AAC ~256) overlap with dark genuine masters on these features and still PASS. The README warning is real.
+- Performance: detect analyzes the middle 150s instead of the whole file (codec lowpass is global), 50% STFT overlap, detect plot at 110 dpi. 96/24 6-minute file: 15s -> 6s. Normal album track: ~2.5s.
+- Detect plot redesigned: dark theme, monospace, verdict-colored header with scores, accent palette in plotting.py. Basic and compare plots inherit it.
+- Verdict and warning wording rewritten to sound like a person.
+- Profile resemblance section (table and batch column) hidden when there is no cutoff to compare against, ranking codecs on a full-band file was noise.
+- Fixed: effective_bit_depth crashed on full-scale samples (INT_MIN lowest-bit trick went negative).
+- New JSON field: active_edge_p97_hz.
+- Added -p / --preview: renders the spectrogram straight in the terminal (256-color, ASCII fallback). No matplotlib, no PNG, done in milliseconds.
+- Added batch detect: `spectro *.flac --detect` analyzes every file and prints a color-coded verdict table; --json writes a combined report.
+- Added effective bit-depth check: catches 16-bit masters padded into 24/32-bit containers by inspecting the lowest set bit.
+- Added fake-stereo check: flags channels with ~1.0 correlation (mono upmix).
+- Added -v / --version with ASCII spectrogram banner plus python/numpy/scipy/soundfile/matplotlib versions.
+- Detect output now color-coded: verdicts, severity tags, warnings, and score bars for lossy/quality/subscores. Respects NO_COLOR and non-tty pipes.
+- Running spectro with no arguments now prints a usage summary before prompting; Ctrl-C / empty input exit cleanly instead of erroring.
+- --verbose no longer owns -v (now long-form only).
+- Fixed: jitter no longer counts as strong evidence on its own, a dead-stable natural rolloff (analog masters) was triggering a HIGH "locked edge" flag on clean files. Now capped unless edge or slope show something codec-like.
+- Fixed: "Closest cutoff resemblance" now says none on PASS files without a hard cutoff instead of naming a random codec.
+- Fixed: bare --json wrote nothing because the const collided with the default; default report name works again.
+- Fixed: slow-import hint never fired (numpy was already imported before the timer started).
+- Fixed: edge percentiles (p10/p50/p90) now computed over active frames only, so silence no longer drags the spectral edge down and skews edge/quality scoring.
+- Fixed: all-silent files no longer hit a NaN warning path in edge percentile computation.
+- Fixed: missing-file error no longer claims the file "is not an audio file".
+- Performance: vectorized rolloff-85 variance (dropped per-frame Python loop).
+- New JSON fields: effective_bit_depth, stereo_correlation.
+- Docs: MANUAL updated for --preview, --version, batch mode, and no-arg behaviour.
+
 # v1.5.0
 
 - Detect mode rewritten around a six-feature evidence-score system instead of hard cutoffs and fallback-heavy heuristics.

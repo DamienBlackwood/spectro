@@ -6,7 +6,8 @@ import numpy as np
 @dataclass(frozen=True)
 class Thresholds:
     detect_nperseg: int = 8192
-    detect_noverlap: int = 6144
+    detect_noverlap: int = 4096
+    detect_max_seconds: float = 150.0
     display_nperseg: int = 1024
     display_overlap: float = 0.5
 
@@ -34,8 +35,8 @@ class Thresholds:
     drop_search_local_threshold: float = 10.0
     drop_search_far_threshold: float = 20.0
 
-    hard_cutoff_drop_db: float = 15.0
-    candidate_cutoffs: tuple = (14000, 16000, 18000, 19000, 20000, 20500, 21000)
+    hard_cutoff_drop_db: float = 10.0
+    candidate_cutoffs: tuple = tuple(range(13000, 21501, 250))
     cutoff_drop_width_hz: float = 1000.0
     cutoff_persistence_pad_hz: float = 500.0
 
@@ -61,6 +62,7 @@ class Thresholds:
     clip_window_sec: float = 0.05
 
     dpi: int = 150
+    detect_dpi: int = 110
     output_fmt: str = "png"
 
     # Evidence score verdict
@@ -174,6 +176,7 @@ class TranscodeEvidence:
     sbr_likelihood: str
     active_frames_pct: float
     suspicious_windows: List[str]
+    edge_p97: float = 0.0
     max_slope_db_per_khz: float = 0.0
     edge_jitter_hz: float = 0.0
     rolloff_85_var_hz: float = 0.0
