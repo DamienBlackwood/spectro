@@ -2,12 +2,17 @@
 
 a tiny python tool to generate spectrograms for audio files and conduct heuristic "lossy source" analysis. 
 
-## What can this be used for
+## How Does It Look?
+
+![Terminal Preview](media/terminal-preview-mode.png)
+
+## Why?
 
 I needed a way to quickly spot resampled or lossy-upconverted audio files. So I built this to:
 * Render spectrograms quickly.
 * Detect frequency shelf bands and cut-off points.
 * Compare two audio files' spectra side by side.
+* And honestly, it's really fun (and annoying) to learn this.
   
 ## WARNING!
 
