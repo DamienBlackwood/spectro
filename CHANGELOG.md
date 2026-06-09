@@ -81,7 +81,7 @@
 - SBR detection now reports none, possible, or likely.
 - High sample-rate files without ultrasonic content now warn instead of auto-failing.
 - Console output now prints a limitations section after analysis.
-- Added --json FILE for machine-readable reports.
+- Added --json FILE for json reports.
 - Added EvidenceFlag severity levels.
 - Added a three-panel forensic analysis plot.
 - Added bit-depth reporting from ffprobe.

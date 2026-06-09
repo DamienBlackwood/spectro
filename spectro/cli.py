@@ -68,7 +68,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--log", action="store_true", help="Log frequency axis")
     p.add_argument("--no-open", dest="no_open", action="store_true", help="Don't auto-open output file")
     p.add_argument("--info", action="store_true", help="Show file info only")
-    p.add_argument("--json", nargs="?", const="", metavar="FILE", help="Write machine-readable JSON report")
+    p.add_argument("--json", nargs="?", const="", metavar="FILE", help="Write a JSON report")
     p.add_argument("--verbose", action="store_true", help="Print per-feature subscores in detect mode")
     p.add_argument("-v", "--version", action="store_true", help="Show version info")
     return p

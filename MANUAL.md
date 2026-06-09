@@ -57,7 +57,7 @@ Run with no arguments to get a quick usage summary and an interactive file promp
 :   Same as above, but with per feature subscore breakdown (edge, slope, jitter, high_band, rolloff, sbr, persistence).
 
 `spectro *.flac --detect`
-:   Batch mode. Analyzes every file and prints a verdict table (file / verdict / lossy / quality / closest resemblance). Add `--json` for a combined machine-readable report.
+:   Batch mode. Analyzes every file and prints a verdict table (file / verdict / lossy / quality / closest resemblance). Add `--json` for a combined report.
 
 `spectro track.flac --preview`
 :   Spectrogram in the terminal, no PNG. Milliseconds, not seconds.
@@ -82,7 +82,7 @@ All output files are written to the same directory as the input audio file.
 :   Comparison plot produced by `--compare`.
 
 `[input_directory]/[filename].json` (or custom name)
-:   Machine-readable report when `--json` is passed in `--detect` mode.
+:   JSON report when `--json` is passed in `--detect` mode.
 
 # INSTALLATION
 
