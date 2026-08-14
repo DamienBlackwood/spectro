@@ -45,11 +45,6 @@ class Thresholds:
     shelf_medium_slope: float = -32.0
     shelf_soft_slope: float = -10.0
 
-    # Shelf depth, how far the spectrum falls across the cutoff
-    shelf_depth_floor_db: float = 6.0
-    shelf_depth_mid_db: float = 10.0
-    shelf_depth_full_db: float = 18.0
-
     sbr_max_cutoff_hz: float = 16000.0
     sbr_above_energy_margin: float = 15.0
     sbr_band_delta_db: float = 12.0
@@ -60,11 +55,6 @@ class Thresholds:
     ultrasonic_delta_threshold: float = 20.0
     high_sample_rate_hz: int = 48000
 
-    fail_cutoff_hz: float = 18000.0
-    fail_persistence: float = 0.5
-    warn_persistence: float = 0.4
-    pass_near_nyquist_margin: float = 8.0
-    low_high_band_margin: float = 6.0
     low_cutoff_hz: float = 14000.0
     upsample_cutoff_hz: float = 20000.0
 
@@ -91,6 +81,11 @@ class Thresholds:
     slope_strong_threshold: float = -45.0
     slope_brickwall_threshold: float = 80.0
 
+    # Shelf depth, how far the spectrum falls across the cutoff
+    shelf_depth_floor_db: float = 6.0
+    shelf_depth_mid_db: float = 10.0
+    shelf_depth_full_db: float = 18.0
+
     # jitter is read off the top quartile of active frames, the ones that reach the ceiling. quiet frames just tell you how the content moves.
     ceiling_quantile: float = 75.0
     jitter_strong_threshold: float = 100.0
@@ -115,7 +110,7 @@ class Thresholds:
     w_sbr: float = 10.0
     w_persistence: float = 5.0
 
-    # Penalties
+    # penalties
     quality_silent_rms_dB: float = -60.0
     quality_narrow_bandwidth_hz: float = 8000.0
     quality_high_noise_floor_dB: float = -65.0

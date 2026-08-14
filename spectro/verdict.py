@@ -15,7 +15,8 @@ from scipy.ndimage import gaussian_filter1d
 
 from .dataclasses_ import EvidenceFlag, T
 
-# I'll leave comments in here because it can help if anyone wants to audit it, please keep in mind I'm still learning this so rookie mistakes WILL ABSOLUTELY be made!
+# I'll leave a lot more comments in here and other important files,because it can help if anyone wants to audit it, 
+# please keep in mind I'm still learning this so rookie mistakes WILL ABSOLUTELY be made!
 
 def _score_edge(edge_hz: float, nyquist: float) -> float:
     """Distance of the ceiling edge from the nearest codec cutoff anchor."""
@@ -103,7 +104,7 @@ def _score_sbr(sbr_likelihood: str) -> float:
 
 
 def _score_persistence(persistence: float, hard_cutoff: bool) -> float:
-    """Backstop: existing cutoff_persistence signal."""
+    """Backstop: does the shelf hold for the whole track or just one passage."""
     if not hard_cutoff:
         return 0.0
     if persistence >= 0.7:

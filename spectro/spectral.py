@@ -6,8 +6,7 @@ from scipy.signal import stft
 
 from . import verdict as verdict_mod
 from .dataclasses_ import (
-    CODEC_PROFILES, ChannelAnalysis, EvidenceFlag, SpectralAnalysisResult, T,
-    TranscodeEvidence,
+    CODEC_PROFILES, ChannelAnalysis, SpectralAnalysisResult, T, TranscodeEvidence,
 )
 
 
@@ -169,8 +168,8 @@ def analyze_time_windows(Zxx_full: np.ndarray, times_full: np.ndarray, hop: int,
     n_windows = max(1, n_frames // frames_per_window)
     suspicious = []
 
-    search_start_idx = np.argmin(np.abs(frequencies - T.cutoff_search_start_hz))
-    search_end_idx = np.searchsorted(frequencies, nyquist * T.nyquist_search_end)
+    search_start_idx = int(np.argmin(np.abs(frequencies - T.cutoff_search_start_hz)))
+    search_end_idx = int(np.searchsorted(frequencies, nyquist * T.nyquist_search_end))
     if search_end_idx <= search_start_idx:
         return suspicious
 
@@ -267,11 +266,10 @@ def analyze_transcode_evidence(data: np.ndarray, sr: int) -> SpectralAnalysisRes
     frequencies = worst_channel.frequencies
     times_decim = worst_channel.times
 
-    all_avg_db = np.array([r.avg_db for r in channel_results])
-    avg_db = np.mean(all_avg_db, axis=0)
+    avg_db = np.mean(np.array([r.avg_db for r in channel_results]), axis=0)
     Sxx_db = np.mean(np.array([r.Sxx_db for r in channel_results]), axis=0)
 
-    noise_floor = np.percentile(avg_db, 5)
+    noise_floor = float(np.percentile(avg_db, 5))
     nyquist = sr / 2
 
     edges_all = active_band_edge(Sxx_db, frequencies, floor_margin_db=T.floor_margin_db)
@@ -313,16 +311,14 @@ def analyze_transcode_evidence(data: np.ndarray, sr: int) -> SpectralAnalysisRes
     shelf_type = verdict_mod.shelf_type_from_slope(max_slope, max_drop)
     cutoff_freq = best_drop_freq if shelf_type != 'none' else float(nyquist)
 
-    if hard_cutoff:
-        persistence_limit = best_drop_freq + T.cutoff_persistence_pad_hz
-    else:
-        persistence_limit = nyquist * T.nyquist_persistence_default
+    persistence_limit = (best_drop_freq + T.cutoff_persistence_pad_hz if hard_cutoff
+                         else nyquist * T.nyquist_persistence_default)
     cutoff_persistence = float(np.mean(valid_edges < persistence_limit)) if len(valid_edges) > 0 else 0.0
 
     ultrasonic_energy = None
     ultrasonic_delta = None
     if sr > T.high_sample_rate_hz:
-        idx_24k = np.searchsorted(frequencies, T.ultrasonic_floor_hz)
+        idx_24k = int(np.searchsorted(frequencies, T.ultrasonic_floor_hz))
         if idx_24k < len(frequencies):
             ultrasonic_peak = float(np.max(avg_db[idx_24k:]))
             ultrasonic_energy = ultrasonic_peak
