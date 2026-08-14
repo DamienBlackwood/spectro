@@ -28,6 +28,8 @@ def build_json_report(res: SpectralAnalysisResult, container_codec: str, contain
         "container_bitrate": container_bitrate,
         "container_bit_depth": container_bit_depth,
         "nyquist_hz": res.nyquist,
+        "cutoff_hz": res.evidence.cutoff_freq,
+        "shelf_type": res.evidence.shelf_type,
         "hard_cutoff": res.evidence.hard_cutoff,
         "strongest_drop_hz": res.evidence.best_drop_freq,
         "strongest_drop_db": res.evidence.max_drop_db,

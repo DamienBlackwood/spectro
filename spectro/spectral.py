@@ -208,33 +208,6 @@ def analyze_time_windows(Zxx_full: np.ndarray, times_full: np.ndarray, hop: int,
     return suspicious
 
 
-def _build_evidence_shell(
-    cutoff_freq: float, cutoff_persistence: float, hard_cutoff: bool,
-    high_band_db: float, near_nyquist_db: float, noise_floor: float,
-    sbr_likelihood: str,
-) -> TranscodeEvidence:
-    """Empty evidence container. Verdict + flags + scores filled in by caller."""
-    return TranscodeEvidence(
-        verdict="PASS",
-        explanation="",
-        cutoff_freq=cutoff_freq,
-        cutoff_persistence=cutoff_persistence,
-        hard_cutoff=hard_cutoff,
-        high_band_db=high_band_db,
-        near_nyquist_db=near_nyquist_db,
-        noise_floor=noise_floor,
-        suspicious_flags=[],
-        edge_p10=0.0,
-        edge_p50=0.0,
-        edge_p90=0.0,
-        best_drop_freq=0.0,
-        max_drop_db=0.0,
-        sbr_likelihood=sbr_likelihood,
-        active_frames_pct=0.0,
-        suspicious_windows=[],
-    )
-
-
 def match_codec_profiles(cutoff_freq: float, shelf_type: str,
                          sbr_likelihood: str) -> dict:
     """Score every known codec profile against what we measured."""
@@ -379,30 +352,34 @@ def analyze_transcode_evidence(data: np.ndarray, sr: int) -> SpectralAnalysisRes
     )
     verdict_str, explanation = verdict_mod.decide_verdict(lossy_score, quality_score)
 
-    evidence = _build_evidence_shell(
-        cutoff_freq=cutoff_freq, cutoff_persistence=cutoff_persistence,
-        hard_cutoff=hard_cutoff, high_band_db=high_band_db,
-        near_nyquist_db=near_nyquist_db, noise_floor=noise_floor,
+    evidence = TranscodeEvidence(
+        verdict=verdict_str,
+        explanation=explanation,
+        cutoff_freq=cutoff_freq,
+        shelf_type=shelf_type,
+        cutoff_persistence=cutoff_persistence,
+        hard_cutoff=hard_cutoff,
+        high_band_db=high_band_db,
+        near_nyquist_db=near_nyquist_db,
+        noise_floor=noise_floor,
+        edge_p10=edge_p10,
+        edge_p50=edge_p50,
+        edge_p90=edge_p90,
+        edge_p97=edge_p97,
+        best_drop_freq=best_drop_freq,
+        max_drop_db=max_drop,
+        max_slope_db_per_khz=max_slope,
+        edge_jitter_hz=edge_jitter,
+        rolloff_85_var_hz=rolloff_var,
+        band_ratio_db=band_ratio,
         sbr_likelihood=sbr_likelihood,
+        active_frames_pct=active_frames_pct,
+        lossy_score=lossy_score,
+        quality_score=quality_score,
+        subscores=subscores,
+        suspicious_flags=verdict_mod.build_score_flags(subscores, lossy_score, q_breakdown),
+        suspicious_windows=suspicious_windows,
     )
-    evidence.verdict = verdict_str
-    evidence.explanation = explanation
-    evidence.edge_p10 = edge_p10
-    evidence.edge_p50 = edge_p50
-    evidence.edge_p90 = edge_p90
-    evidence.edge_p97 = edge_p97
-    evidence.best_drop_freq = best_drop_freq
-    evidence.max_drop_db = max_drop
-    evidence.active_frames_pct = active_frames_pct
-    evidence.suspicious_windows = suspicious_windows
-    evidence.max_slope_db_per_khz = max_slope
-    evidence.edge_jitter_hz = edge_jitter
-    evidence.rolloff_85_var_hz = rolloff_var
-    evidence.band_ratio_db = band_ratio
-    evidence.lossy_score = lossy_score
-    evidence.quality_score = quality_score
-    evidence.subscores = subscores
-    evidence.suspicious_flags = verdict_mod.build_score_flags(subscores, lossy_score, q_breakdown)
 
     scores = match_codec_profiles(cutoff_freq, shelf_type, sbr_likelihood)
     # ties broken by whichever profile centre sits closest to the measured cutoff

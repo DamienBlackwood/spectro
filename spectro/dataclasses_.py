@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 import numpy as np
 
@@ -186,28 +186,30 @@ class TranscodeEvidence:
     verdict: str
     explanation: str
     cutoff_freq: float
+    shelf_type: str
     cutoff_persistence: float
     hard_cutoff: bool
     high_band_db: float
     near_nyquist_db: float
     noise_floor: float
-    suspicious_flags: List[EvidenceFlag]
     edge_p10: float
     edge_p50: float
     edge_p90: float
+    edge_p97: float
     best_drop_freq: float
     max_drop_db: float
+    max_slope_db_per_khz: float
+    # MAD of the active edge across the frames that actually reach the ceiling
+    edge_jitter_hz: float
+    rolloff_85_var_hz: float
+    band_ratio_db: float
     sbr_likelihood: str
     active_frames_pct: float
-    suspicious_windows: List[str]
-    edge_p97: float = 0.0
-    max_slope_db_per_khz: float = 0.0
-    edge_jitter_hz: float = 0.0
-    rolloff_85_var_hz: float = 0.0
-    band_ratio_db: float = 0.0
-    lossy_score: float = 0.0
-    quality_score: float = 100.0
-    subscores: Optional[Dict[str, float]] = None
+    lossy_score: float
+    quality_score: float
+    subscores: Dict[str, float]
+    suspicious_flags: List[EvidenceFlag] = field(default_factory=list)
+    suspicious_windows: List[str] = field(default_factory=list)
 
 
 @dataclass
