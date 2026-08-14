@@ -94,39 +94,42 @@ def cmd_detect(args, file_path: str, data: np.ndarray, sr: int,
     quality_color = GREEN if res.evidence.quality_score >= T.quality_required else YELLOW
     print(f"  Data quality:      {bar(res.evidence.quality_score, color=quality_color)} {res.evidence.quality_score:.0f}/100")
 
-    print(f"\n  Active edge:       p10={res.evidence.edge_p10:.0f}  p50={res.evidence.edge_p50:.0f}  p90={res.evidence.edge_p90:.0f}  p97={res.evidence.edge_p97:.0f} Hz")
-    print(f"  Edge jitter:       {res.evidence.edge_jitter_hz:.0f} Hz (MAD)")
-    print(f"  Rolloff variance:  {res.evidence.rolloff_85_var_hz:.0f} Hz (std)")
-    print(f"  Filter slope:      {res.evidence.max_slope_db_per_khz:.1f} dB/kHz")
-    print(f"  Band ratio (H/L):  {res.evidence.band_ratio_db:.1f} dB")
-    print(f"  SBR likelihood:    {res.evidence.sbr_likelihood}")
-    if res.evidence.hard_cutoff:
-        print(f"  Strongest drop:    {res.evidence.best_drop_freq:.0f} Hz ({res.evidence.max_drop_db:.1f} dB)")
-    print(f"  Cutoff persistence: {res.evidence.cutoff_persistence*100:.0f}%  (active frames: {res.evidence.active_frames_pct*100:.0f}%)")
+    e = res.evidence
+    print(f"\n  Active edge:       p10={e.edge_p10:.0f}  p50={e.edge_p50:.0f}  p90={e.edge_p90:.0f}  p97={e.edge_p97:.0f} Hz")
+    print(f"  Edge jitter:       {e.edge_jitter_hz:.0f} Hz (MAD at the ceiling)")
+    print(f"  Rolloff variance:  {e.rolloff_85_var_hz:.0f} Hz (std, not scored)")
+    print(f"  Filter slope:      {e.max_slope_db_per_khz:.1f} dB/kHz")
+    if e.shelf_type == 'none':
+        print(f"  Shelf:             none (deepest dip only {e.max_drop_db:.1f} dB)")
+    else:
+        print(f"  Shelf:             {e.shelf_type} at {e.cutoff_freq:.0f} Hz, {e.max_drop_db:.1f} dB deep")
+    print(f"  Band ratio (H/L):  {e.band_ratio_db:.1f} dB")
+    print(f"  SBR likelihood:    {e.sbr_likelihood}")
+    print(f"  Cutoff persistence: {e.cutoff_persistence*100:.0f}%  (active frames: {e.active_frames_pct*100:.0f}%)")
     if sr > T.high_sample_rate_hz and res.ultrasonic_delta is not None:
         print(f"  Ultrasonic (24k+): {res.ultrasonic_delta:.1f} dB above noise")
 
     if args.verbose and res.evidence.subscores:
-        print(f"\n  Subscores:")
+        print("\n  Subscores:")
         for name, val in sorted(res.evidence.subscores.items(), key=lambda x: -x[1]):
             print(f"    {name:14} {bar(val, width=15)} {val:5.1f}/100")
 
-    if len(res.evidence.suspicious_flags) > 0:
-        print(f"\n  Flags:")
+    if res.evidence.suspicious_flags:
+        print("\n  Flags:")
         for flag in res.evidence.suspicious_flags:
             sev = paint(f"[{flag.severity.upper()}]", severity_color(flag.severity), bold=True)
             print(f"    • {sev} {flag.name}: {flag.detail}")
 
-    if len(res.evidence.suspicious_windows) > 0:
-        print(f"\n  Suspicious time windows:")
+    if res.evidence.suspicious_windows:
+        print("\n  Suspicious time windows:")
         for w in res.evidence.suspicious_windows[:8]:
             print(f"    • {w}")
         if len(res.evidence.suspicious_windows) > 8:
             print(f"    ... and {len(res.evidence.suspicious_windows) - 8} more")
 
-    no_cutoff = res.evidence.verdict == "PASS" and not res.evidence.hard_cutoff
+    no_cutoff = not res.evidence.hard_cutoff and res.evidence.verdict == "PASS"
     if no_cutoff:
-        print(f"\n  Closest cutoff resemblance: none (no lossy-looking cutoff shape)")
+        print("\n  Closest cutoff resemblance: none (no lossy-looking cutoff shape)")
     else:
         print(f"\n  Closest cutoff resemblance: {res.profile.upper()}")
 
@@ -156,7 +159,7 @@ def cmd_detect(args, file_path: str, data: np.ndarray, sr: int,
             json.dump(report, jf, indent=2)
         print(f"\n  JSON report saved: {json_path}")
 
-    print(f"\n[3/3] Generating analysis plot...")
+    print("\n[3/3] Generating analysis plot...")
     plt = lazy_pyplot()
     fig, axes = plt.subplots(3, 1, figsize=(12, 11))
     ax1, ax2, ax3 = axes
@@ -171,7 +174,9 @@ def cmd_detect(args, file_path: str, data: np.ndarray, sr: int,
              ha='right', fontsize=10, color=vcolor, weight='bold')
 
     ax1.plot(freqs, spectrum, color=ACCENT, linewidth=0.8, alpha=0.85, label='Spectrum')
-    ax1.axvline(x=res.cutoff_freq, color=ORANGE, linestyle='--', label=f"Cutoff: {res.cutoff_freq:.0f} Hz")
+    if res.shelf_type != 'none':
+        ax1.axvline(x=res.cutoff_freq, color=ORANGE, linestyle='--',
+                    label=f"Cutoff: {res.cutoff_freq:.0f} Hz ({res.shelf_type})")
     if sr > T.high_sample_rate_hz:
         ax1.axvline(x=24000, color=MUTED, linestyle=':', alpha=0.7, label='24 kHz')
     ax1.axhline(y=res.noise_floor, color=MUTED, linestyle=':', alpha=0.7, label='Noise floor')
@@ -196,7 +201,8 @@ def cmd_detect(args, file_path: str, data: np.ndarray, sr: int,
     Sxx_disp = res.Sxx_db[::f_decim]
     extent = [res.times[0], res.times[-1], freqs[0], freqs[::f_decim][-1]]
     im = ax2.imshow(Sxx_disp, aspect='auto', origin='lower', extent=extent, cmap='inferno', interpolation='bilinear')
-    ax2.axhline(y=res.cutoff_freq, color='white', linestyle='--', alpha=0.7)
+    if res.shelf_type != 'none':
+        ax2.axhline(y=res.cutoff_freq, color='white', linestyle='--', alpha=0.7)
     if sr > T.high_sample_rate_hz:
         ax2.axhline(y=24000, color='#3ddc84', linestyle=':', alpha=0.5)
     ax2.set_xlabel('Time (s)')
@@ -224,6 +230,8 @@ def cmd_detect(args, file_path: str, data: np.ndarray, sr: int,
 
     output_path = args.output if args.output else str(outputs_dir / f"{Path(file_path).stem}_analysis.png")
     plt.savefig(output_path, dpi=T.detect_dpi, format=T.output_fmt)
+
+    plt.close(fig)
 
     print(f"      Saved: {output_path}")
     if not args.no_open:
