@@ -87,8 +87,12 @@ class Thresholds:
     slope_strong_threshold: float = -45.0
     slope_brickwall_threshold: float = 80.0
 
-    jitter_lossy_threshold: float = 250.0
+    # jitter is read off the top quartile of active frames, the ones that reach the ceiling. quiet frames just tell you how the content moves.
+    ceiling_quantile: float = 75.0
     jitter_strong_threshold: float = 100.0
+    jitter_lossy_threshold: float = 250.0
+    jitter_loose_threshold: float = 500.0
+    jitter_none_threshold: float = 800.0
 
     # High/low band energy ratio. Lossless ~-5 to -15, MP3-128 <= -25
     band_ratio_lossy_dB: float = -20.0

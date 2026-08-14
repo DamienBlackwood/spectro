@@ -70,14 +70,14 @@ def _score_shelf_depth(drop_db: float) -> float:
 
 
 def _score_jitter(jitter_hz: float) -> float:
-    """Low jitter = codec locks edge = lossy."""
-    if jitter_hz >= 800:
+    """Low jitter = codec locks the edge in place = lossy."""
+    if jitter_hz >= T.jitter_none_threshold:
         return 0.0
     if jitter_hz <= T.jitter_strong_threshold:
         return 90.0
     if jitter_hz <= T.jitter_lossy_threshold:
         return 60.0
-    if jitter_hz <= 500:
+    if jitter_hz <= T.jitter_loose_threshold:
         return 30.0
     return 10.0
 
@@ -141,9 +141,10 @@ def compute_lossy_score(
         "sbr":         _score_sbr(sbr_likelihood),
         "persistence": _score_persistence(persistence, hard_cutoff),
     }
-    # jitter only counts when the edge sits somewhere codec-like, analog masters can hold a dead-stable natural rolloff
-    if subs["edge"] == 0.0 and subs["slope"] == 0.0:
-        subs["jitter"] = min(subs["jitter"], 25.0)
+    # a locked edge only counts if it's locked at a codec frequency with a cliff under it,
+    #  analog masters hold a dead-stable natural rolloff too
+    if subs["edge"] < 50.0 or subs["shelf"] <= 0.0:
+        subs["jitter"] = 0.0
     total = sum(WEIGHTS.values())
     score = sum(subs[k] * WEIGHTS[k] for k in subs) / total
     # brick wall at a codec anchor that never moves = the classic signature.
@@ -272,16 +273,18 @@ def steepest_slope_db_per_khz(avg_db: np.ndarray, freqs: np.ndarray,
 
 
 def compute_edge_jitter(edges_all: np.ndarray, active_mask: np.ndarray) -> float:
-    """MAD of active edge over time, in Hz. Only over active frames."""
+    """MAD of the active edge over the frames that actually reach the ceiling.
+    Averaging every frame just measures how much the content moves around."""
     valid = ~np.isnan(edges_all)
     if active_mask is not None and len(active_mask) == len(edges_all):
         valid = valid & active_mask
     edges = edges_all[valid]
     if len(edges) < 8:
         return 0.0
-    med = np.median(edges)
-    mad = float(np.median(np.abs(edges - med)))
-    return mad
+    top = edges[edges >= np.percentile(edges, T.ceiling_quantile)]
+    if len(top) < 4:
+        top = edges
+    return float(np.median(np.abs(top - np.median(top))))
 
 
 def compute_rolloff_85_variance(Sxx_db: np.ndarray, freqs: np.ndarray) -> float:
