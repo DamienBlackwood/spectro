@@ -377,7 +377,7 @@ def analyze_transcode_evidence(data: np.ndarray, sr: int) -> SpectralAnalysisRes
         lossy_score=lossy_score,
         quality_score=quality_score,
         subscores=subscores,
-        suspicious_flags=verdict_mod.build_score_flags(subscores, lossy_score, q_breakdown),
+        suspicious_flags=verdict_mod.build_score_flags(subscores, q_breakdown),
         suspicious_windows=suspicious_windows,
     )
 

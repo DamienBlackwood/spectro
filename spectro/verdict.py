@@ -8,7 +8,7 @@ References:
 - arxiv 2407.21545 for ROC-curve framing
 - ITU-R BS.1387 (PEAQ) for multi-feature fusion via floor-bounded sum
 """
-from typing import Dict, Tuple
+from typing import Dict, List, Tuple
 
 import numpy as np
 from scipy.ndimage import gaussian_filter1d
@@ -206,32 +206,36 @@ def decide_verdict(lossy_score: float, quality_score: float) -> Tuple[str, str]:
     return "PASS", "no lossy fingerprints found"
 
 
-def build_score_flags(subscores: Dict[str, float], lossy_score: float,
-                      quality_breakdown: Dict[str, float]) -> list:
+DESCRIPTORS = {
+    "edge":        ("Spectral edge", "active edge near known codec cutoff"),
+    "slope":       ("Steep filter slope", "transition band falls faster than natural rolloff"),
+    "shelf":       ("Shelf depth", "spectrum drops off a cliff at the cutoff"),
+    "jitter":      ("Locked spectral edge", "edge frequency barely varies across frames"),
+    "high_band":   ("Suppressed high band", "energy above 4 kHz severely reduced"),
+    "sbr":         ("SBR-like reconstruction", "upper band correlates with lower (HE-AAC pattern)"),
+    "persistence": ("Persistent hard cutoff", "drop holds across active frames"),
+}
+
+
+def build_score_flags(subscores: Dict[str, float],
+                      quality_breakdown: Dict[str, float]) -> List[EvidenceFlag]:
     """Surface dominant signals as EvidenceFlags so users see WHY."""
     flags = []
 
-    def sev_from_sub(name: str, s: float) -> str:
-        if s >= 80: return "high"
-        if s >= 50: return "medium"
-        if s >= 25: return "low"
-        return "info"
+    def severity(s: float) -> str:
+        if s >= 80:
+            return "high"
+        if s >= 50:
+            return "medium"
+        return "low"
 
-    descriptors = {
-        "edge":        ("Spectral edge", "active edge near known codec cutoff"),
-        "slope":       ("Steep filter slope", "transition band falls faster than natural rolloff"),
-        "shelf":       ("Shelf depth", "spectrum drops off a cliff at the cutoff"),
-        "jitter":      ("Locked spectral edge", "edge frequency barely varies across frames"),
-        "high_band":   ("Suppressed high band", "energy above 4 kHz severely reduced"),
-        "sbr":         ("SBR-like reconstruction", "upper band correlates with lower (HE-AAC pattern)"),
-        "persistence": ("Persistent hard cutoff", "drop holds across active frames"),
-    }
     for name, s in sorted(subscores.items(), key=lambda x: -x[1]):
         if s < 25:
             continue
-        label, detail = descriptors[name]
-        flags.append(EvidenceFlag(severity=sev_from_sub(name, s), name=label, detail=f"{detail} (subscore {s:.0f}/100)"))
-    if "silent" in quality_breakdown or "narrow_band" in quality_breakdown:
+        label, detail = DESCRIPTORS[name]
+        flags.append(EvidenceFlag(severity=severity(s), name=label,
+                                  detail=f"{detail} (subscore {s:.0f}/100)"))
+    if quality_breakdown:
         reasons = ", ".join(quality_breakdown.keys())
         flags.append(EvidenceFlag(severity="info", name="Low data quality",
                                   detail=f"verdict reliability reduced: {reasons}"))
