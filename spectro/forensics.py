@@ -20,7 +20,7 @@ def effective_bit_depth(file_path: str, max_frames: int = 5_000_000) -> Optional
 
     # x & -x isolates the lowest set bit, a padded 16-bit master never touches the low bits
     lowest = int(np.min(np.bitwise_and(x, -x).view(np.uint32)))
-    effective = 32 - int(np.log2(lowest))
+    effective = 32 - (lowest.bit_length() - 1)
     claimed = 24 if info.subtype == "PCM_24" else 32
     return claimed, effective
 

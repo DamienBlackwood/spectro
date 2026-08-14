@@ -14,6 +14,13 @@ from ..spectral import analyze_transcode_evidence
 from ..term import GREEN, RED, YELLOW, bar, paint, severity_color, verdict_color
 
 
+def _kbps(raw) -> str:
+    try:
+        return f"{int(raw)//1000} kbps"
+    except (TypeError, ValueError):
+        return None
+
+
 def _probe_container(file_path: str):
     """Best-effort ffprobe metadata extraction. Returns (codec, sr, bitrate, bit_depth)."""
     container_codec = "unknown"
@@ -38,10 +45,13 @@ def _probe_container(file_path: str):
             if stream.get('codec_type') == 'audio':
                 container_codec = stream.get('codec_name', 'unknown')
                 container_sr = stream.get('sample_rate')
-                container_bit_depth = stream.get('bits_per_raw_sample', stream.get('bits_per_sample'))
-                if 'bit_rate' in stream:
-                    container_bitrate = f"{int(stream['bit_rate'])//1000} kbps"
+                depth = stream.get('bits_per_raw_sample') or stream.get('bits_per_sample')
+                # ffprobe says "0" for lossy streams, which is not a bit depth
+                container_bit_depth = depth if depth not in (None, '0', 0) else None
+                container_bitrate = _kbps(stream.get('bit_rate'))
                 break
+        if not container_bitrate:
+            container_bitrate = _kbps(ffprobe_info.get('format', {}).get('bit_rate'))
 
     return container_codec, container_sr, container_bitrate, container_bit_depth
 
