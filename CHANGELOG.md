@@ -1,7 +1,49 @@
 # Changelog
 
-# v2.0.0
+# v2.1.0 (and 2.0.0)
 
+Everything below was measured against a corpus of 14 known-lossless tracks spanning 1965 to 2023 and 44.1/48/96/192 kHz, put through eight encoders and decoded back to FLAC. 126 files.
+
+Before: 12/14 clean (two genuine files were FAILing), 51/112 transcodes flagged. After: all 14 clean references are unflagged (13 PASS, one INCONCLUSIVE) and 54/112 transcodes are WARN/FAIL. Eight more transcodes are INCONCLUSIVE because their source is the same narrow-band orchestral track; they are not counted as catches. Clean files used to score up to 75 out of 100 against a WARN line of 45; they now top out at 43.
+
+What still slips through is mp3 V0 and Apple aac 256, which genuinely have no cutoff left to find. Full table in the README.
+
+- Performance, with no analysis or rendering approximation: PNG and terminal modes scan every sample once for exact dynamics, then compute the exact STFT frames that their original post-STFT decimation retained. Same Hann window, centres, zero-padding, scaling, timestamps, frequency bins, and dB values; discarded FFT frames are never created. On a 525 MiB, 192 kHz, 13m33s stereo FLAC, PNG dropped from 2m09s to 4.2s and terminal preview from 1m24s to 3.8s. The optimized PNG is pixel-identical to the original 1800x900 Matplotlib output.
+- Performance: exact dynamics now use one bounded-memory streaming pass instead of seven whole-array passes and multi-gigabyte temporaries. The same stress file's dynamics pass dropped from 11.7s after loading to 3.5s including FLAC decoding.
+- Performance: Spectro seeds an isolated 1.7 KiB Matplotlib cache with the same bundled DejaVu faces used by ASCII-titled plots, removing the first-render system-font crawl with pixel-identical output. Non-ASCII titles retain full system-font discovery and fallback.
+- Accuracy: the slope feature was measuring spectral raggedness, not shelves. Its smoothing kernel was a bin count, so it was 16 Hz wide at 44.1 kHz and 70 Hz at 192 kHz and the same master measured differently depending on its container. Under-smoothed, one ragged notch in a quiet top end reads as a brick wall, which is how two genuine 44.1 kHz files were coming back FAIL at -62 and -35 dB/kHz. Kernel is a fixed 60 Hz now and the slope thresholds are recalibrated to match.
+- Accuracy: the "brick wall at a codec anchor" shortcut to a 75 score now also requires the shelf to have real depth. A steep wall with nothing behind it is a resampler's anti-alias filter, which every 44.1 kHz downsample has.
+- Accuracy: files whose content stops below every codec anchor now come back INCONCLUSIVE instead of PASS. If a track runs out at 9 kHz a lowpass could be sitting anywhere above it and leave no trace, so PASS was claiming more than it knew.
+- Accuracy: added a 17.5 kHz codec anchor, where both ffmpeg's and Apple's AAC put their 128 kbps cutoff. No clean file in the corpus sits in that window.
+- Accuracy: the reported cutoff was wrong on most files. The gradient walk latched onto the first dip past 12 kHz, so a clean 48 kHz master and an mp3-320 both came back "15009 Hz". Cutoff and shelf type now come from the deepest measured shelf and the measured slope, which also fixes the "Closest cutoff resemblance" line (it named vorbis_128 for nearly everything) and un-breaks SBR detection, which was gated on that same bad number.
+- Accuracy: new *shelf depth* subscore, how far the spectrum falls across the cutoff. Clean files measure under 6 dB, transcodes 9-24. It took over the weight that rolloff variance was wasting.
+- Accuracy: rolloff-85 variance dropped from the score. It measured ~1100-1250 Hz on clean and transcoded copies of the same track, so it was 10% of the budget contributing nothing. Still reported, just not counted.
+- Accuracy: edge jitter is now read off the top quartile of active frames instead of all of them. On dynamic material the old figure measured how much the content moved (1500 Hz on a brickwalled opus file) rather than how tightly the codec ceiling held.
+- Accuracy: a shelf under 10 dB deep now still counts as a hard cutoff if the slope beside it is steeper than -32 dB/kHz. Analog masters have so little top end that a brick wall only costs 6-9 dB, and opus-128 was passing because of it.
+- Accuracy: jitter only scores when the edge sits near a codec anchor *and* there is a shelf under it. A dead-stable natural rolloff is not evidence of anything.
+- Accuracy: weights rebalanced toward slope and shelf depth, the two features that actually separate. edge 25→20, slope 20→25, shelf 0→20, jitter 15→10, high_band 15→10.
+- Accuracy: codec cutoff ranges in CODEC_PROFILES re-measured from real encodes instead of estimated. Added mp3_v0, aac_192, aac_256. Profile ties now break on whichever centre is closest to the measured cutoff.
+- Added `tests/make_corpus.py`: point it at your own lossless files and it builds the transcode set, scores everything and tells you where it was wrong. This was the "build a test corpus" TODO.
+- Added `tests/test_detect.py`: synthetic signals, no audio needed, catches anyone inverting the scoring in a refactor.
+- Fixed: `--preview` grid alignment on the default macOS terminal. Block characters are East Asian "ambiguous" width and Terminal.app draws them double-wide; it now falls back to a coloured ASCII ramp there, overridable with `SPECTRO_BLOCKS`.
+- Added half-block rendering to `--preview`, double the vertical resolution, and a framed axis. Colour runs are coalesced so the output is a third smaller.
+- Fixed: clip detection ran on a mono downmix, so out-of-phase clipping cancelled and never showed up. It also built a Python list of every clipped sample before throwing all but 8 away. Now per-channel, and it reports where each clipped *run* starts rather than eight consecutive samples of the same one.
+- Fixed: bit depth printed as "0-bit" for lossy files, because ffprobe returns the string "0" and that is truthy.
+- Fixed: `--compare` used FFT resampling on whole songs, now polyphase. Also prints a per-band level difference (low/mid/high/air) so the comparison says something numeric.
+- Fixed: matplotlib figures were never closed in detect and compare.
+- Added `--fails-only`, `--sort` and `-j/--jobs` for batch detect. Batch now runs 4 files at once by default, about 1.5x on an album. Threads, not processes: a process pool measured slower because each worker pays a fresh numpy import.
+- Every mode accepts multiple files now, not just `--detect`. They run one after another.
+- Ctrl-C exits cleanly instead of dumping a traceback. Piping into `head` no longer errors either.
+- Conflicting flags now say which one won instead of silently ignoring the rest, and `--json` says so when it isn't going to write anything.
+- Interactive prompt now handles paths dragged into a terminal, where spaces come through backslash-escaped.
+- `-v` lists dependency versions from a tuple instead of by hand, and says whether ffmpeg is around.
+- `--info` shows sample rate, channels and duration.
+- `import spectro` no longer pulls in numpy, scipy and matplotlib just to read `__version__`.
+- Audio sniffing recognises m4a/mp4 `ftyp` boxes, raw mp3/aac frame headers, and a few more extensions. Dropped MIDI, which is not audio soundfile can read.
+- Removed dead code: `compute_slope_db_per_khz`, `main_wrapper`, `_build_evidence_shell` and six unused thresholds left over from the pre-v1.5 verdict system.
+- New JSON fields: `cutoff_hz`, `shelf_type`.
+
+(below this is 2.0.0 i forgot to commit it)
 - Accuracy: slope detection rewritten as steepest 250 Hz drop instead of a symmetric regression window, which was diluting brick walls with passband (a -172 dB/kHz mp3 shelf measured as -10.8).
 - Accuracy: cutoff candidates now every 250 Hz from 13-21.5k instead of seven hand-picked spots, hard-cutoff drop threshold 15 -> 10 dB so shelves in already-quiet top end still register.
 - Accuracy: codec matching now uses the p97 active edge (codec ceiling) instead of p90, which tracks content and sits way under the lowpass on quiet material.

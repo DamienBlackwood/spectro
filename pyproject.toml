@@ -1,7 +1,11 @@
 [project]
 name = "spectro"
 version = "2.0.0"
-requires-python = ">=3.8"
+description = "Spectrograms and heuristic lossy-source analysis for audio files"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { file = "LICENSE.md" }
+keywords = ["audio", "spectrogram", "dsp", "flac", "transcode", "forensics"]
 dependencies = [
     "numpy",
     "matplotlib",
@@ -9,6 +13,10 @@ dependencies = [
     "soundfile",
     "pillow"
 ]
+
+[project.urls]
+Homepage = "https://github.com/DamienBlackwood/spectro"
+Changelog = "https://github.com/DamienBlackwood/spectro/blob/main/CHANGELOG.md"
 
 [project.scripts]
 spectro = "spectro.cli:main"
