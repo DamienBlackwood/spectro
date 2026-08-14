@@ -336,8 +336,8 @@ def analyze_transcode_evidence(data: np.ndarray, sr: int) -> SpectralAnalysisRes
     rms_db = 20 * np.log10(rms_overall + 1e-10)
 
     lossy_score, subscores = verdict_mod.compute_lossy_score(
-        edge_p90=edge_p97, slope_db_per_khz=max_slope, jitter_hz=edge_jitter,
-        band_ratio_db=band_ratio, rolloff_var_hz=rolloff_var,
+        edge_hz=edge_p97, slope_db_per_khz=max_slope, shelf_depth_db=max_drop,
+        jitter_hz=edge_jitter, band_ratio_db=band_ratio,
         sbr_likelihood=sbr_likelihood, persistence=cutoff_persistence,
         hard_cutoff=hard_cutoff, nyquist=nyquist,
     )

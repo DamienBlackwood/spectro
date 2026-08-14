@@ -48,6 +48,7 @@ class Thresholds:
     # Shelf depth, how far the spectrum falls across the cutoff
     shelf_depth_floor_db: float = 6.0
     shelf_depth_mid_db: float = 10.0
+    shelf_depth_full_db: float = 18.0
 
     sbr_max_cutoff_hz: float = 16000.0
     sbr_above_energy_margin: float = 15.0
@@ -89,8 +90,6 @@ class Thresholds:
     jitter_lossy_threshold: float = 250.0
     jitter_strong_threshold: float = 100.0
 
-    rolloff_var_lossy_threshold: float = 300.0  # std Hz; lossy < this
-
     # High/low band energy ratio. Lossless ~-5 to -15, MP3-128 <= -25
     band_ratio_lossy_dB: float = -20.0
     band_ratio_strong_dB: float = -30.0
@@ -99,11 +98,12 @@ class Thresholds:
     warn_score: float = 45.0
     quality_required: float = 50.0
 
-    w_edge: float = 25.0
-    w_slope: float = 20.0
-    w_jitter: float = 15.0
-    w_high_band: float = 15.0
-    w_rolloff: float = 10.0
+    # rolloff-85 variance used to be in here. It measured the same on clean and transcoded files, so its weight went to shelf depth, which actually splits
+    w_edge: float = 20.0
+    w_slope: float = 25.0
+    w_shelf: float = 20.0
+    w_jitter: float = 10.0
+    w_high_band: float = 10.0
     w_sbr: float = 10.0
     w_persistence: float = 5.0
 

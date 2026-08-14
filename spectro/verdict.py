@@ -56,6 +56,19 @@ def _score_slope(slope_db_per_khz: float) -> float:
     return (s - natural) * (40.0 / (lossy - natural))
 
 
+def _score_shelf_depth(drop_db: float) -> float:
+    """How far the spectrum falls across the cutoff. A codec lowpass costs 15-25 dB
+    inside a kilohertz, music that just runs out of top end tapers under 6."""
+    floor, mid, full = T.shelf_depth_floor_db, T.shelf_depth_mid_db, T.shelf_depth_full_db
+    if drop_db < floor:
+        return 0.0
+    if drop_db >= full:
+        return 100.0
+    if drop_db >= mid:
+        return 50.0 + (drop_db - mid) * (50.0 / (full - mid))
+    return (drop_db - floor) * (50.0 / (mid - floor))
+
+
 def _score_jitter(jitter_hz: float) -> float:
     """Low jitter = codec locks edge = lossy."""
     if jitter_hz >= 800:
@@ -81,17 +94,6 @@ def _score_high_band(band_ratio_db: float) -> float:
     return 30.0 * ((-10 - band_ratio_db) / 10.0)
 
 
-def _score_rolloff_var(rolloff_var_hz: float) -> float:
-    """Low variance = locked = lossy."""
-    if rolloff_var_hz >= 1000:
-        return 0.0
-    if rolloff_var_hz <= 150:
-        return 80.0
-    if rolloff_var_hz <= T.rolloff_var_lossy_threshold:
-        return 50.0
-    return max(0.0, 50.0 * (1.0 - (rolloff_var_hz - T.rolloff_var_lossy_threshold) / 700.0))
-
-
 def _score_sbr(sbr_likelihood: str) -> float:
     if sbr_likelihood == "likely":
         return 85.0
@@ -113,35 +115,37 @@ def _score_persistence(persistence: float, hard_cutoff: bool) -> float:
     return 15.0
 
 
+WEIGHTS = {
+    "edge":        T.w_edge,
+    "slope":       T.w_slope,
+    "shelf":       T.w_shelf,
+    "jitter":      T.w_jitter,
+    "high_band":   T.w_high_band,
+    "sbr":         T.w_sbr,
+    "persistence": T.w_persistence,
+}
+
+
 def compute_lossy_score(
-    edge_p90: float, slope_db_per_khz: float, jitter_hz: float,
-    band_ratio_db: float, rolloff_var_hz: float, sbr_likelihood: str,
-    persistence: float, hard_cutoff: bool, nyquist: float,
+    edge_hz: float, slope_db_per_khz: float, shelf_depth_db: float, jitter_hz: float,
+    band_ratio_db: float, sbr_likelihood: str, persistence: float,
+    hard_cutoff: bool, nyquist: float,
 ) -> Tuple[float, Dict[str, float]]:
     """Weighted sum of subscores. Returns (final_0_100, subscores dict)."""
     subs = {
-        "edge":        _score_edge_p90(edge_p90, nyquist),
+        "edge":        _score_edge_p90(edge_hz, nyquist),
         "slope":       _score_slope(slope_db_per_khz),
+        "shelf":       _score_shelf_depth(shelf_depth_db),
         "jitter":      _score_jitter(jitter_hz),
         "high_band":   _score_high_band(band_ratio_db),
-        "rolloff":     _score_rolloff_var(rolloff_var_hz),
         "sbr":         _score_sbr(sbr_likelihood),
         "persistence": _score_persistence(persistence, hard_cutoff),
     }
     # jitter only counts when the edge sits somewhere codec-like, analog masters can hold a dead-stable natural rolloff
     if subs["edge"] == 0.0 and subs["slope"] == 0.0:
         subs["jitter"] = min(subs["jitter"], 25.0)
-    weights = {
-        "edge":        T.w_edge,
-        "slope":       T.w_slope,
-        "jitter":      T.w_jitter,
-        "high_band":   T.w_high_band,
-        "rolloff":     T.w_rolloff,
-        "sbr":         T.w_sbr,
-        "persistence": T.w_persistence,
-    }
-    total = sum(weights.values())
-    score = sum(subs[k] * weights[k] for k in subs) / total
+    total = sum(WEIGHTS.values())
+    score = sum(subs[k] * WEIGHTS[k] for k in subs) / total
     # brick wall at a codec anchor that never moves = the classic signature
     if subs["edge"] >= 80 and subs["slope"] >= 80 and subs["persistence"] >= 70:
         score = max(score, 75.0)
@@ -207,9 +211,9 @@ def build_score_flags(subscores: Dict[str, float], lossy_score: float,
     descriptors = {
         "edge":        ("Spectral edge", "active edge near known codec cutoff"),
         "slope":       ("Steep filter slope", "transition band falls faster than natural rolloff"),
+        "shelf":       ("Shelf depth", "spectrum drops off a cliff at the cutoff"),
         "jitter":      ("Locked spectral edge", "edge frequency barely varies across frames"),
         "high_band":   ("Suppressed high band", "energy above 4 kHz severely reduced"),
-        "rolloff":     ("Stable rolloff", "85% energy point too consistent for natural audio"),
         "sbr":         ("SBR-like reconstruction", "upper band correlates with lower (HE-AAC pattern)"),
         "persistence": ("Persistent hard cutoff", "drop holds across active frames"),
     }
@@ -278,7 +282,8 @@ def compute_edge_jitter(edges_all: np.ndarray, active_mask: np.ndarray) -> float
 
 
 def compute_rolloff_85_variance(Sxx_db: np.ndarray, freqs: np.ndarray) -> float:
-    """Std of the 85th-percentile energy frequency, per frame, over time."""
+    """Std of the 85th-percentile energy frequency, per frame, over time. Shown
+    but not scored, it lands around 1100-1250 Hz whatever the source was."""
     if Sxx_db.shape[1] < 8:
         return 0.0
     S_lin = 10 ** (Sxx_db / 10)
