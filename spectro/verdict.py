@@ -146,8 +146,11 @@ def compute_lossy_score(
         subs["jitter"] = min(subs["jitter"], 25.0)
     total = sum(WEIGHTS.values())
     score = sum(subs[k] * WEIGHTS[k] for k in subs) / total
-    # brick wall at a codec anchor that never moves = the classic signature
-    if subs["edge"] >= 80 and subs["slope"] >= 80 and subs["persistence"] >= 70:
+    # brick wall at a codec anchor that never moves = the classic signature.
+    # the shelf has to be real too, a steep wall with nothing behind it is a
+    # resampler's anti-alias filter, which every 44.1k downsample has
+    if (subs["edge"] >= 80 and subs["slope"] >= 80
+            and subs["persistence"] >= 70 and subs["shelf"] >= 50):
         score = max(score, 75.0)
     return min(100.0, max(0.0, score)), subs
 
