@@ -17,23 +17,23 @@ from .dataclasses_ import EvidenceFlag, T
 
 # I'll leave comments in here because it can help if anyone wants to audit it, please keep in mind I'm still learning this so rookie mistakes WILL ABSOLUTELY be made!
 
-def _score_edge_p90(edge_p90: float, nyquist: float) -> float:
-    """Distance of p90 edge from nearest codec cutoff anchor."""
-    if edge_p90 >= 21000:
-        return 0.0  # near Nyquist for 44.1k = no evidence
-    if edge_p90 >= nyquist * 0.97:
+def _score_edge(edge_hz: float, nyquist: float) -> float:
+    """Distance of the ceiling edge from the nearest codec cutoff anchor."""
+    if edge_hz >= T.codec_ceiling_hz:
+        return 0.0  # no codec lowpass lives up here, so nothing to match against
+    if edge_hz >= nyquist * 0.97:
         return 0.0  # full-band, no evidence
-    dists = [abs(edge_p90 - c) for c in T.codec_cutoffs]
+    dists = [abs(edge_hz - c) for c in T.codec_cutoffs]
     nearest = min(dists)
     if nearest <= T.codec_cutoff_window_hz:
-        # A tight match → high score
+        # A tight match -> high score
         return 100.0 * (1.0 - nearest / T.codec_cutoff_window_hz)
     # Lower frequencies can be more suspicious (he-aac, low-bitrate, etc)
-    if edge_p90 < 14000:
+    if edge_hz < 14000:
         return 80.0
-    if edge_p90 < 17000:
+    if edge_hz < 17000:
         return 50.0
-    if edge_p90 < 19500:
+    if edge_hz < 19500:
         return 30.0
     return 10.0
 
@@ -133,7 +133,7 @@ def compute_lossy_score(
 ) -> Tuple[float, Dict[str, float]]:
     """Weighted sum of subscores. Returns (final_0_100, subscores dict)."""
     subs = {
-        "edge":        _score_edge_p90(edge_hz, nyquist),
+        "edge":        _score_edge(edge_hz, nyquist),
         "slope":       _score_slope(slope_db_per_khz),
         "shelf":       _score_shelf_depth(shelf_depth_db),
         "jitter":      _score_jitter(jitter_hz),

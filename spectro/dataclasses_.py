@@ -77,8 +77,10 @@ class Thresholds:
 
     # Evidence score verdict
     # Codec cutoff anchors, I got these empirically from LAME wiki, https://www.rfc-editor.org/rfc/rfc6716
-    codec_cutoffs: tuple = (16000, 18600, 19700, 20500)  # 128/192/256/320 mp3
+    # 128/192/256/320 mp3, plus 17500 where aac-128 lands (measured, both the ffmpeg encoder and Apple's)
+    codec_cutoffs: tuple = (16000, 17500, 18600, 19700, 20500)
     codec_cutoff_window_hz: float = 2500.0  # ± this from anchor = a lossy match
+    codec_ceiling_hz: float = 21000.0       # no codec lowpass lives above this
 
     # Slope thresholds, measured on a 60 Hz-smoothed spectrum. genuine masters top out near -30 dB/kHz, codec shelves run -33 to -100.
     slope_smooth_hz: float = 60.0
@@ -120,16 +122,19 @@ class Thresholds:
 T = Thresholds()
 
 
+# cutoffs re-measured by encoding known-lossless tracks and reading the drop backout. he_aac is still a published figure, nothing here encodes it.
 CODEC_PROFILES = {
-    'mp3_128':   {'cutoff': (15500, 16500), 'sbr': False, 'shelf': 'hard'},
-    'mp3_192':   {'cutoff': (18000, 19000), 'sbr': False, 'shelf': 'hard'},
-    'mp3_256':   {'cutoff': (19500, 20500), 'sbr': False, 'shelf': 'hard'},
-    'mp3_320':   {'cutoff': (20000, 21000), 'sbr': False, 'shelf': 'medium'},
-    'aac_128':   {'cutoff': (15000, 16500), 'sbr': False, 'shelf': 'soft'},
-    'aac_256':   {'cutoff': (19000, 20500), 'sbr': False, 'shelf': 'soft'},
+    'mp3_128':   {'cutoff': (16000, 16800), 'sbr': False, 'shelf': 'hard'},
+    'mp3_192':   {'cutoff': (18300, 19000), 'sbr': False, 'shelf': 'hard'},
+    'mp3_256':   {'cutoff': (19300, 20000), 'sbr': False, 'shelf': 'hard'},
+    'mp3_320':   {'cutoff': (19800, 20600), 'sbr': False, 'shelf': 'hard'},
+    'mp3_v0':    {'cutoff': (20800, 21800), 'sbr': False, 'shelf': 'medium'},
+    'aac_128':   {'cutoff': (16800, 17800), 'sbr': False, 'shelf': 'hard'},
+    'aac_192':   {'cutoff': (19200, 19900), 'sbr': False, 'shelf': 'hard'},
+    'aac_256':   {'cutoff': (20900, 21800), 'sbr': False, 'shelf': 'soft'},
     'he_aac':    {'cutoff': (13000, 15000), 'sbr': True,  'shelf': 'soft'},
-    'opus_128':  {'cutoff': (19000, 20500), 'sbr': False, 'shelf': 'soft'},
-    'vorbis_128':{'cutoff': (15500, 17000), 'sbr': False, 'shelf': 'medium'},
+    'vorbis_128':{'cutoff': (17000, 18900), 'sbr': False, 'shelf': 'hard'},
+    'opus_128':  {'cutoff': (19700, 20300), 'sbr': False, 'shelf': 'hard'},
 }
 
 DR_THRESHOLDS = {

@@ -235,6 +235,38 @@ def _build_evidence_shell(
     )
 
 
+def match_codec_profiles(cutoff_freq: float, shelf_type: str,
+                         sbr_likelihood: str) -> dict:
+    """Score every known codec profile against what we measured."""
+    scores = {}
+    for codec, profile in CODEC_PROFILES.items():
+        score = 0
+        low, high = profile['cutoff']
+        mid = (low + high) / 2
+
+        if low <= cutoff_freq <= high:
+            score += 40
+        elif abs(cutoff_freq - mid) < 2000:
+            score += 20
+        elif abs(cutoff_freq - mid) < 4000:
+            score += 5
+
+        if profile['shelf'] == shelf_type:
+            score += 30
+        elif profile['shelf'] in ('hard', 'medium') and shelf_type in ('hard', 'medium'):
+            score += 15
+        elif profile['shelf'] in ('soft', 'none') and shelf_type in ('soft', 'none'):
+            score += 15
+
+        if profile['sbr'] != (sbr_likelihood != "none"):
+            score -= 40
+        else:
+            score += 30
+
+        scores[codec] = score
+    return scores
+
+
 def analyze_transcode_evidence(data: np.ndarray, sr: int) -> SpectralAnalysisResult:
     # codec lowpass is global, the middle 150s is plenty to find it
     max_n = int(T.detect_max_seconds * sr)
@@ -295,7 +327,7 @@ def analyze_transcode_evidence(data: np.ndarray, sr: int) -> SpectralAnalysisRes
         near_nyquist_db = noise_floor
 
     # steepest drop up to just past the edge. codec shelves live below ~21k, anything steeper above that is anti-alias or natural content edge
-    slope_hi = min(edge_p97 + 1500, 21000.0, nyquist * 0.95)
+    slope_hi = min(edge_p97 + 1500, T.codec_ceiling_hz, nyquist * 0.95)
     max_slope = verdict_mod.steepest_slope_db_per_khz(avg_db, frequencies, T.cutoff_search_start_hz, slope_hi)
 
     best_drop_freq, max_drop = strongest_drop(avg_db, frequencies, nyquist)
@@ -372,33 +404,10 @@ def analyze_transcode_evidence(data: np.ndarray, sr: int) -> SpectralAnalysisRes
     evidence.subscores = subscores
     evidence.suspicious_flags = verdict_mod.build_score_flags(subscores, lossy_score, q_breakdown)
 
-    scores = {}
-    for codec, profile in CODEC_PROFILES.items():
-        score = 0
-        low, high = profile['cutoff']
-
-        if low <= cutoff_freq <= high:
-            score += 40
-        elif abs(cutoff_freq - (low + high) / 2) < 2000:
-            score += 20
-        elif abs(cutoff_freq - (low + high) / 2) < 4000:
-            score += 5
-
-        if profile['shelf'] == shelf_type:
-            score += 30
-        elif profile['shelf'] in ['hard', 'medium'] and shelf_type in ['hard', 'medium']:
-            score += 15
-        elif profile['shelf'] in ['soft', 'none'] and shelf_type in ['soft', 'none']:
-            score += 15
-
-        if profile['sbr'] != (sbr_likelihood != "none"):
-            score -= 40
-        else:
-            score += 30
-
-        scores[codec] = score
-
-    best_profile = max(scores, key=scores.get)
+    scores = match_codec_profiles(cutoff_freq, shelf_type, sbr_likelihood)
+    # ties broken by whichever profile centre sits closest to the measured cutoff
+    best_profile = max(scores, key=lambda c: (
+        scores[c], -abs(cutoff_freq - sum(CODEC_PROFILES[c]['cutoff']) / 2)))
 
     transcode_warning = None
     if sr > T.high_sample_rate_hz and cutoff_freq < T.upsample_cutoff_hz and hard_cutoff:
