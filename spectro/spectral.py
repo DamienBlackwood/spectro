@@ -374,8 +374,8 @@ def analyze_transcode_evidence(data: np.ndarray, sr: int) -> SpectralAnalysisRes
         hard_cutoff=hard_cutoff, nyquist=nyquist,
     )
     quality_score, q_breakdown = verdict_mod.compute_quality_score(
-        rms_db=rms_db, edge_p90=edge_p90, edge_p50=edge_p50,
-        noise_floor=noise_floor, sr=sr,
+        rms_db=rms_db, edge_p90=edge_p90, edge_p50=edge_p50, edge_p97=edge_p97,
+        noise_floor=noise_floor,
     )
     verdict_str, explanation = verdict_mod.decide_verdict(lossy_score, quality_score)
 

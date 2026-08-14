@@ -157,13 +157,13 @@ def compute_lossy_score(
 
 
 def compute_quality_score(
-    rms_db: float, edge_p90: float, edge_p50: float, noise_floor: float,
-    sr: int,
+    rms_db: float, edge_p90: float, edge_p50: float, edge_p97: float,
+    noise_floor: float,
 ) -> Tuple[float, Dict[str, float]]:
     """Orthogonal: 'is the data trustworthy enough to decide?'."""
     penalty = 0.0
     breakdown = {}
-    # Silent or very quiet → can't analyze
+    # Silent or very quiet -> can't analyze
     if rms_db < T.quality_silent_rms_dB:
         p = 40.0
         penalty += p
@@ -172,7 +172,12 @@ def compute_quality_score(
         p = 15.0
         penalty += p
         breakdown["quiet"] = p
-    # Extremely narrow bandwidth (telephone, AM radio)
+    # Content stops below every codec cutoff, so a lowpass could be sitting anywhere above it and leave no trace. Nothing to read either way.
+    if edge_p97 < T.codec_blind_edge_hz:
+        p = 60.0
+        penalty += p
+        breakdown["edge_below_anchors"] = p
+    # Extremely narrow bandwidth (telephone, AM radio or something like that)
     if edge_p90 < T.quality_narrow_bandwidth_hz:
         p = 35.0
         penalty += p
@@ -181,7 +186,7 @@ def compute_quality_score(
         p = 20.0
         penalty += p
         breakdown["very_narrow_median"] = p
-    # Elevated noise floor (vinyl, tape, saturation)
+    # Elevated noise floor (vinyl, tape, saturation from what I could gather)
     if noise_floor > T.quality_high_noise_floor_dB:
         p = 15.0
         penalty += p

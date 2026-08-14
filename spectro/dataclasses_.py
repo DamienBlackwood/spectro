@@ -81,6 +81,8 @@ class Thresholds:
     codec_cutoffs: tuple = (16000, 17500, 18600, 19700, 20500)
     codec_cutoff_window_hz: float = 2500.0  # ± this from anchor = a lossy match
     codec_ceiling_hz: float = 21000.0       # no codec lowpass lives above this
+    # under this the content edge is already below every anchor, nothing to read
+    codec_blind_edge_hz: float = 12000.0
 
     # Slope thresholds, measured on a 60 Hz-smoothed spectrum. genuine masters top out near -30 dB/kHz, codec shelves run -33 to -100.
     slope_smooth_hz: float = 60.0
