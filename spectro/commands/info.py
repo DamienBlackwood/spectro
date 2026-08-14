@@ -9,6 +9,6 @@ def cmd_info(dynamics: DynamicsResult) -> None:
     print(f"  Dynamic range:   {dynamics.dynamic_range:.1f} dB")
     print(f"  Rating:          {dynamics.dr_rating.upper()}")
     print(f"  Clipped samples: {dynamics.clipped_samples:,} ({dynamics.clip_percentage:.4f}%)")
-    if len(dynamics.clip_times) > 0:
-        times_str = ", ".join([f"{t:.2f}s" for t in dynamics.clip_times])
-        print(f"  Clip locations:  {times_str}")
+    if dynamics.clip_times:
+        times_str = ", ".join(f"{t:.2f}s" for t in dynamics.clip_times)
+        print(f"  Clips start at:  {times_str}")
