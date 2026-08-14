@@ -70,10 +70,12 @@ class Thresholds:
     codec_cutoffs: tuple = (16000, 18600, 19700, 20500)  # 128/192/256/320 mp3
     codec_cutoff_window_hz: float = 2500.0  # ± this from anchor = a lossy match
 
-    # Slope thresholds. Natural rolloff ~-5, MP3 ~-25 to -40
-    slope_window_hz: float = 2000.0       # transition band width to fit
-    slope_lossy_threshold: float = -15.0
-    slope_strong_threshold: float = -30.0 
+    # Slope thresholds, measured on a 60 Hz-smoothed spectrum. genuine masters top out near -30 dB/kHz, codec shelves run -33 to -100.
+    slope_smooth_hz: float = 60.0
+    slope_natural_threshold: float = 10.0   # gentler than this is just content
+    slope_lossy_threshold: float = -25.0
+    slope_strong_threshold: float = -45.0
+    slope_brickwall_threshold: float = 80.0
 
     jitter_lossy_threshold: float = 250.0
     jitter_strong_threshold: float = 100.0

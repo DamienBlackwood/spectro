@@ -11,6 +11,7 @@ References:
 from typing import Dict, Tuple
 
 import numpy as np
+from scipy.ndimage import gaussian_filter1d
 
 from .dataclasses_ import EvidenceFlag, T
 
@@ -38,18 +39,21 @@ def _score_edge_p90(edge_p90: float, nyquist: float) -> float:
 
 
 def _score_slope(slope_db_per_khz: float) -> float:
-    """Steeper transition band = more lossy."""
-    s = abs(slope_db_per_khz)
-    if s < 5:
-        return 0.0   # natural rolloff
-    if s >= 40:
-        return 100.0  # brick-wall (like opus)
-    # Linear ramp 5..40 → 0..100, with knee at lossy threshold
-    if s >= abs(T.slope_strong_threshold):
-        return 80.0 + (s - abs(T.slope_strong_threshold)) * 2.0
-    if s >= abs(T.slope_lossy_threshold):
-        return 40.0 + (s - abs(T.slope_lossy_threshold)) * (40.0 / 15.0)
-    return s * (40.0 / abs(T.slope_lossy_threshold))
+    """Steeper transition band = more lossy. Real masters top out near -30,
+    codec shelves run -33 to -100, so this one carries the most weight."""
+    # only a fall is evidence. a rising top end is unusual, but it is not a codec lowpass and should not score just because its magnitude is large
+    s = max(0.0, -slope_db_per_khz)
+    lossy, strong = abs(T.slope_lossy_threshold), abs(T.slope_strong_threshold)
+    natural, brick = T.slope_natural_threshold, T.slope_brickwall_threshold
+    if s < natural:
+        return 0.0
+    if s >= brick:
+        return 100.0
+    if s >= strong:
+        return 80.0 + (s - strong) * (20.0 / (brick - strong))
+    if s >= lossy:
+        return 40.0 + (s - lossy) * (40.0 / (strong - lossy))
+    return (s - natural) * (40.0 / (lossy - natural))
 
 
 def _score_jitter(jitter_hz: float) -> float:
@@ -225,34 +229,25 @@ def build_score_flags(subscores: Dict[str, float], lossy_score: float,
 def steepest_slope_db_per_khz(avg_db: np.ndarray, freqs: np.ndarray,
                               lo_hz: float, hi_hz: float, span_hz: float = 250.0) -> float:
     """Steepest drop over a 250 Hz span. Codec shelves are near-vertical,
-    a symmetric regression window dilutes them with passband."""
-    from scipy.ndimage import gaussian_filter1d
+    a symmetric regression window dilutes them with passband.
+
+    Smoothing width is in Hz, not bins. As a bin count it was 16 Hz at 44.1k and
+    70 Hz at 192k, and under-smoothed one ragged notch in a quiet top end reads
+    as a brick wall, which is how clean 16-bit files were measuring -60 dB/kHz.
+    """
+    if len(freqs) < 2 or len(avg_db) < 2:
+        return 0.0
     bin_hz = freqs[1] - freqs[0]
+    if bin_hz <= 0:
+        return 0.0
     k = max(1, int(span_hz / bin_hz))
     i0 = np.searchsorted(freqs, lo_hz)
     i1 = np.searchsorted(freqs, hi_hz)
     if i1 - i0 < k + 4:
         return 0.0
-    smoothed = gaussian_filter1d(avg_db, sigma=3)
+    smoothed = gaussian_filter1d(avg_db, sigma=max(1.0, T.slope_smooth_hz / bin_hz))
     diffs = (smoothed[i0 + k:i1] - smoothed[i0:i1 - k]) / (k * bin_hz) * 1000.0
     return float(np.min(diffs))
-
-
-def compute_slope_db_per_khz(avg_db: np.ndarray, freqs: np.ndarray,
-                              center_hz: float, window_hz: float = None) -> float:
-    """Linear regression slope (dB/kHz) over transition band centered on center_hz."""
-    if window_hz is None:
-        window_hz = T.slope_window_hz
-    half = window_hz / 2
-    mask = (freqs >= center_hz - half) & (freqs <= center_hz + half)
-    if np.sum(mask) < 4:
-        return 0.0
-    f_kHz = freqs[mask] / 1000.0
-    y = avg_db[mask]
-    # least-squares slope
-    A = np.vstack([f_kHz, np.ones_like(f_kHz)]).T
-    slope, _ = np.linalg.lstsq(A, y, rcond=None)[0]
-    return float(slope)
 
 
 def compute_edge_jitter(edges_all: np.ndarray, active_mask: np.ndarray) -> float:
