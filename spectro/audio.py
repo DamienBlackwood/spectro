@@ -1,17 +1,20 @@
+from __future__ import annotations
+
 import os
 import platform
 import subprocess
 import sys
 from pathlib import Path
-from typing import Tuple
+from typing import TYPE_CHECKING, Tuple
 
-import numpy as np
-import soundfile as sf
+if TYPE_CHECKING:
+    import numpy as np
 
 
-_AUDIO_MAGIC = (b'RIFF', b'fLaC', b'OggS', b'MThd', b'ID3')
+_AUDIO_MAGIC = (b'RIFF', b'fLaC', b'OggS', b'ID3', b'FORM', b'\xff\xfb', b'\xff\xf1')
 _AUDIO_EXTS = {'.wav', '.flac', '.ogg', '.opus', '.mp3', '.m4a', '.aac', '.wma',
-               '.aiff', '.aif', '.ape', '.wv', '.mpc', '.dff', '.dsf', '.caf'}
+               '.aiff', '.aif', '.ape', '.wv', '.mpc', '.dff', '.dsf', '.caf',
+               '.alac', '.mp4', '.oga', '.au', '.w64', '.tta'}
 
 
 def looks_like_audio(path: Path) -> bool:
@@ -20,9 +23,11 @@ def looks_like_audio(path: Path) -> bool:
         return True
     try:
         with open(path, 'rb') as f:
-            head = f.read(16)
+            head = f.read(12)
     except OSError:
         return False
+    if head[4:8] == b'ftyp':  # m4a/mp4 box, the brand sits after it
+        return True
     return any(head.startswith(m) for m in _AUDIO_MAGIC)
 
 
@@ -41,6 +46,8 @@ def open_file(path: str) -> None:
 
 def load_audio(file_path: str) -> Tuple[np.ndarray, int]:
     """Load audio with soundfile, fallback to FFmpeg for unsupported formats."""
+    import soundfile as sf
+
     try:
         return sf.read(file_path, dtype='float32')
     except (sf.LibsndfileError, OSError, RuntimeError):
