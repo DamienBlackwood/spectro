@@ -1,8 +1,9 @@
 from ..dataclasses_ import DynamicsResult
 
 
-def cmd_info(dynamics: DynamicsResult) -> None:
-    print(f"\n--- DYNAMICS ANALYSIS ---")
+def cmd_info(dynamics: DynamicsResult, sr: int, duration: float, channels: int) -> None:
+    print("\n--- DYNAMICS ANALYSIS ---")
+    print(f"  Format:          {sr} Hz, {channels} ch, {duration:.1f}s")
     print(f"  Peak level:      {dynamics.peak_db:.1f} dB")
     print(f"  RMS level:       {dynamics.rms_db:.1f} dB")
     print(f"  Crest factor:    {dynamics.crest_factor:.1f} dB")

@@ -5,6 +5,8 @@ from .dataclasses_ import SpectralAnalysisResult
 
 
 def fmt_time(s: float) -> str:
+    if s < 1:
+        return f"{s*1000:.0f}ms"
     if s < 60:
         return f"{s:.2f}s"
     return f"{int(s//60)}m {s%60:.1f}s"

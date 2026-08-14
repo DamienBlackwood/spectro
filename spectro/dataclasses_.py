@@ -9,7 +9,6 @@ class Thresholds:
     detect_nperseg: int = 8192
     detect_max_seconds: float = 150.0
     display_nperseg: int = 1024
-    display_overlap: float = 0.5
 
     floor_margin_db: float = 18.0
     frame_mean_margin: float = 12.0
