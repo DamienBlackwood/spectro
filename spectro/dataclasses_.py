@@ -5,8 +5,8 @@ import numpy as np
 
 @dataclass(frozen=True)
 class Thresholds:
+    # windows are 50% overlapped, see stft_params
     detect_nperseg: int = 8192
-    detect_noverlap: int = 4096
     detect_max_seconds: float = 150.0
     display_nperseg: int = 1024
     display_overlap: float = 0.5
@@ -24,21 +24,27 @@ class Thresholds:
     nyquist_near_high: float = 0.99
     nyquist_persistence_default: float = 0.94
     nyquist_suspicious_cap: float = 0.92
+    nyquist_cutoff_cand_cap: float = 0.97
 
     grad_threshold_offset: float = 1.5
-    hard_shelf_local_drop: float = -3.0
-    medium_shelf_local_drop: float = -1.5
-    soft_shelf_local_drop: float = -1.0
     timewin_local_drop: float = -3.0
 
-    end_energy_margin: float = 5.0
     drop_search_local_threshold: float = 10.0
-    drop_search_far_threshold: float = 20.0
 
     hard_cutoff_drop_db: float = 10.0
     candidate_cutoffs: tuple = tuple(range(13000, 21501, 250))
     cutoff_drop_width_hz: float = 1000.0
     cutoff_persistence_pad_hz: float = 500.0
+    cutoff_refine_window_hz: float = 750.0
+
+    # shelf steepness, read off the measured slope instead of a gradient walk
+    shelf_hard_slope: float = -50.0
+    shelf_medium_slope: float = -32.0
+    shelf_soft_slope: float = -10.0
+
+    # Shelf depth, how far the spectrum falls across the cutoff
+    shelf_depth_floor_db: float = 6.0
+    shelf_depth_mid_db: float = 10.0
 
     sbr_max_cutoff_hz: float = 16000.0
     sbr_above_energy_margin: float = 15.0
@@ -142,6 +148,8 @@ class DynamicsResult:
 class ChannelAnalysis:
     cutoff_freq: float
     shelf_type: str
+    shelf_depth_db: float
+    slope_db_per_khz: float
     sbr_likelihood: str
     frequencies: np.ndarray
     times: np.ndarray

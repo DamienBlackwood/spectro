@@ -225,6 +225,20 @@ def build_score_flags(subscores: Dict[str, float], lossy_score: float,
     return flags
 
 
+def shelf_type_from_slope(slope_db_per_khz: float, shelf_depth_db: float) -> str:
+    """Name the shelf from what we measured, not from a gradient walk."""
+    if shelf_depth_db < T.shelf_depth_floor_db:
+        return 'none'
+    if slope_db_per_khz <= T.shelf_hard_slope:
+        return 'hard'
+    if slope_db_per_khz <= T.shelf_medium_slope:
+        return 'medium'
+    # a gentle slope is only a shelf if it actually took a chunk out
+    if slope_db_per_khz <= T.shelf_soft_slope and shelf_depth_db >= T.shelf_depth_mid_db:
+        return 'soft'
+    return 'none'
+
+
 # - Feature Extraction Helpers -
 def steepest_slope_db_per_khz(avg_db: np.ndarray, freqs: np.ndarray,
                               lo_hz: float, hi_hz: float, span_hz: float = 250.0) -> float:

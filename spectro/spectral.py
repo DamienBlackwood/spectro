@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import List, Tuple
 
 import numpy as np
 from scipy.ndimage import gaussian_filter1d
@@ -9,6 +9,15 @@ from .dataclasses_ import (
     CODEC_PROFILES, ChannelAnalysis, EvidenceFlag, SpectralAnalysisResult, T,
     TranscodeEvidence,
 )
+
+
+def stft_params(n_samples: int, nperseg: int) -> Tuple[int, int]:
+    """Shrink the window to fit short files. scipy clamps nperseg on its own and
+    then trips over the noverlap it was handed."""
+    if n_samples < 1:
+        raise ValueError("audio has no samples")
+    nperseg = min(nperseg, n_samples)
+    return nperseg, nperseg // 2
 
 
 def active_band_edge(S_db: np.ndarray, freqs: np.ndarray,
@@ -38,6 +47,17 @@ def cutoff_drop_score(avg_db: np.ndarray, freqs: np.ndarray, cutoff_hz: float,
     return below - above
 
 
+def strongest_drop(avg_db: np.ndarray, freqs: np.ndarray,
+                   nyquist: float) -> Tuple[float, float]:
+    """Sweep the candidate cutoffs and return the deepest (freq_hz, depth_db)."""
+    cands = [c for c in T.candidate_cutoffs if c < nyquist * T.nyquist_cutoff_cand_cap]
+    if not cands:
+        return float(nyquist), 0.0
+    drops = [(cutoff_drop_score(avg_db, freqs, c), -c) for c in cands]
+    depth, neg_freq = max(drops)
+    return float(-neg_freq), float(depth)
+
+
 def get_active_frames(Sxx_db: np.ndarray, freqs: np.ndarray, noise_floor: float,
                       nyquist: float) -> np.ndarray:
     """Boolean mask of frames that are loud enough and spectrally rich."""
@@ -57,10 +77,44 @@ def spectral_flatness(power_band: np.ndarray) -> float:
     return geometric / arithmetic
 
 
+def detect_sbr(avg_db: np.ndarray, freqs: np.ndarray, cutoff_idx: int,
+               noise_floor: float) -> str:
+    """HE-AAC rebuilds the top octave from the one under it, so the two bands
+    correlate and the upper one comes out flatter."""
+    below_start = max(0, cutoff_idx - 80)
+    below_end = cutoff_idx - 20
+    above_start = cutoff_idx + 20
+    above_end = min(len(avg_db), cutoff_idx + 80)
+    if below_end <= below_start or above_end <= above_start:
+        return "none"
+
+    below_region = avg_db[below_start:below_end]
+    above_region = avg_db[above_start:above_end]
+    below_energy = float(np.mean(below_region))
+    above_energy = float(np.mean(above_region))
+
+    if above_energy <= noise_floor + T.sbr_above_energy_margin:
+        return "none"
+    if (below_energy - above_energy) >= T.sbr_band_delta_db:
+        return "none"
+
+    min_len = min(len(below_region), len(above_region))
+    if min_len <= 10:
+        return "none"
+    corr = np.corrcoef(below_region[:min_len], above_region[:min_len])[0, 1]
+    if np.isnan(corr) or corr <= T.sbr_corr_threshold:
+        return "none"
+
+    upper_flatness = spectral_flatness(10 ** (above_region / 10))
+    lower_flatness = spectral_flatness(10 ** (below_region / 10))
+    if upper_flatness > lower_flatness * T.sbr_flatness_ratio:
+        return "likely"
+    return "possible"
+
+
 def _analyze_channel(data_ch: np.ndarray, sr: int) -> ChannelAnalysis:
-    """Analyze a single channel."""
-    nperseg = T.detect_nperseg
-    noverlap = T.detect_noverlap
+    """STFT one channel and locate its cutoff."""
+    nperseg, noverlap = stft_params(len(data_ch), T.detect_nperseg)
 
     frequencies, times, Zxx = stft(data_ch, fs=sr, nperseg=nperseg, noverlap=noverlap, window='hann')
     power = np.abs(Zxx) ** 2
@@ -71,80 +125,30 @@ def _analyze_channel(data_ch: np.ndarray, sr: int) -> ChannelAnalysis:
     Sxx_db = 10 * np.log10(np.abs(Zxx[:, ::time_decim]) ** 2 + 1e-10)
     times_decim = times[::time_decim]
 
-    smoothed = gaussian_filter1d(avg_db, sigma=3)
-    gradient = np.gradient(smoothed)
-    noise_floor = np.percentile(avg_db, 5)
-
+    noise_floor = float(np.percentile(avg_db, 5))
     nyquist = sr / 2
-    search_start_idx = np.argmin(np.abs(frequencies - T.cutoff_search_start_hz))
-    search_end_hz = nyquist * T.nyquist_search_end
-    search_end_idx = np.searchsorted(frequencies, search_end_hz)
-    if search_end_idx <= search_start_idx:
-        search_end_idx = len(frequencies) - 1
 
-    cutoff_freq = nyquist
-    cutoff_idx = len(frequencies) - 1
-    shelf_type = 'none'
-    drop_detected = False
-
-    if search_end_idx > search_start_idx:
-        search_gradient = gradient[search_start_idx:search_end_idx]
-        search_spectrum = smoothed[search_start_idx:search_end_idx]
-        baseline_grad = np.median(gradient[search_start_idx // 2:search_start_idx])
-        threshold = baseline_grad - T.grad_threshold_offset
-
-        for i in range(len(search_gradient)):
-            if search_gradient[i] < threshold and search_spectrum[i] > noise_floor + T.drop_search_local_threshold:
-                window_start = max(0, i - 5)
-                window_end = min(len(search_gradient), i + 10)
-                local_drop = np.min(search_gradient[window_start:window_end])
-
-                if local_drop < T.soft_shelf_local_drop:
-                    cutoff_idx = search_start_idx + i
-                    cutoff_freq = frequencies[cutoff_idx]
-                    drop_detected = True
-                    if local_drop < T.hard_shelf_local_drop:
-                        shelf_type = 'hard'
-                    elif local_drop < T.medium_shelf_local_drop:
-                        shelf_type = 'medium'
-                    else:
-                        shelf_type = 'soft'
-                    break
-
-        if not drop_detected:
-            end_energy = np.mean(smoothed[-20:])
-            mid_energy = np.mean(smoothed[search_start_idx:search_start_idx + 20])
-            if end_energy > noise_floor + T.end_energy_margin and (mid_energy - end_energy) < T.drop_search_far_threshold:
-                cutoff_freq = nyquist
-                shelf_type = 'none'
+    # sweeping for the deepest shelf. the old gradient walk latched onto the first dip past 12k and called it the cutoff, even on clean files
+    cutoff_freq, depth = strongest_drop(avg_db, frequencies, nyquist)
+    slope_hi = min(cutoff_freq + T.cutoff_refine_window_hz, nyquist * 0.98)
+    slope = verdict_mod.steepest_slope_db_per_khz(
+        avg_db, frequencies, T.cutoff_search_start_hz, slope_hi)
+    shelf_type = verdict_mod.shelf_type_from_slope(slope, depth)
 
     sbr_likelihood = "none"
-    if cutoff_freq < T.sbr_max_cutoff_hz and cutoff_idx < len(frequencies) - 50:
-        below_start = max(0, cutoff_idx - 80)
-        below_end = cutoff_idx - 20
-        above_start = cutoff_idx + 20
-        above_end = min(len(avg_db), cutoff_idx + 80)
+    if shelf_type != 'none' and cutoff_freq < T.sbr_max_cutoff_hz:
+        cutoff_idx = int(np.searchsorted(frequencies, cutoff_freq))
+        if cutoff_idx < len(frequencies) - 50:
+            sbr_likelihood = detect_sbr(avg_db, frequencies, cutoff_idx, noise_floor)
 
-        if below_end > below_start and above_end > above_start:
-            below_region = avg_db[below_start:below_end]
-            above_region = avg_db[above_start:above_end]
-            below_energy = np.mean(below_region)
-            above_energy = np.mean(above_region)
-
-            if above_energy > noise_floor + T.sbr_above_energy_margin and (below_energy - above_energy) < T.sbr_band_delta_db:
-                min_len = min(len(below_region), len(above_region))
-                if min_len > 10:
-                    corr = np.corrcoef(below_region[:min_len], above_region[:min_len])[0, 1]
-                    if not np.isnan(corr) and corr > T.sbr_corr_threshold:
-                        sbr_likelihood = "possible"
-                        upper_flatness = spectral_flatness(10 ** (above_region / 10))
-                        lower_flatness = spectral_flatness(10 ** (below_region / 10))
-                        if upper_flatness > lower_flatness * T.sbr_flatness_ratio:
-                            sbr_likelihood = "likely"
+    if shelf_type == 'none':
+        cutoff_freq = float(nyquist)
 
     return ChannelAnalysis(
         cutoff_freq=cutoff_freq,
         shelf_type=shelf_type,
+        shelf_depth_db=depth,
+        slope_db_per_khz=slope,
         sbr_likelihood=sbr_likelihood,
         frequencies=frequencies,
         times=times_decim,
@@ -251,11 +255,9 @@ def analyze_transcode_evidence(data: np.ndarray, sr: int) -> SpectralAnalysisRes
             r.times = r.times + t_offset
             r.times_full = r.times_full + t_offset
 
-    shelf_rank = {'hard': 0, 'medium': 1, 'soft': 2, 'none': 3}
-    channel_results.sort(key=lambda r: (shelf_rank.get(r.shelf_type, 3), r.cutoff_freq))
+    # worst channel = deepest shelf, lowest cutoff. joint stereo can leave one side more messed up than the other
+    channel_results.sort(key=lambda r: (-r.shelf_depth_db, r.cutoff_freq))
     worst_channel = channel_results[0]
-    cutoff_freq = worst_channel.cutoff_freq
-    shelf_type = worst_channel.shelf_type
     sbr_likelihood = worst_channel.sbr_likelihood
     frequencies = worst_channel.frequencies
     times_decim = worst_channel.times
@@ -292,9 +294,14 @@ def analyze_transcode_evidence(data: np.ndarray, sr: int) -> SpectralAnalysisRes
     if np.isnan(near_nyquist_db):
         near_nyquist_db = noise_floor
 
-    drops = {c: cutoff_drop_score(avg_db, frequencies, c) for c in T.candidate_cutoffs}
-    best_drop_freq, max_drop = max(drops.items(), key=lambda x: x[1]) if drops else (0.0, 0.0)
+    # steepest drop up to just past the edge. codec shelves live below ~21k, anything steeper above that is anti-alias or natural content edge
+    slope_hi = min(edge_p97 + 1500, 21000.0, nyquist * 0.95)
+    max_slope = verdict_mod.steepest_slope_db_per_khz(avg_db, frequencies, T.cutoff_search_start_hz, slope_hi)
+
+    best_drop_freq, max_drop = strongest_drop(avg_db, frequencies, nyquist)
     hard_cutoff = max_drop > T.hard_cutoff_drop_db
+    shelf_type = verdict_mod.shelf_type_from_slope(max_slope, max_drop)
+    cutoff_freq = best_drop_freq if shelf_type != 'none' else float(nyquist)
 
     if hard_cutoff:
         persistence_limit = best_drop_freq + T.cutoff_persistence_pad_hz
@@ -316,10 +323,6 @@ def analyze_transcode_evidence(data: np.ndarray, sr: int) -> SpectralAnalysisRes
         sr, frequencies, nyquist, noise_floor,
     )
 
-    # steepest drop up to just past the edge. codec shelves live below ~21k,
-    # anything steeper above that is anti-alias or natural content edge
-    slope_hi = min(edge_p97 + 1500, 21000.0, nyquist * 0.95)
-    max_slope = verdict_mod.steepest_slope_db_per_khz(avg_db, frequencies, T.cutoff_search_start_hz, slope_hi)
     edge_jitter = verdict_mod.compute_edge_jitter(edges_all, active_mask)
     rolloff_var = verdict_mod.compute_rolloff_85_variance(Sxx_db, frequencies)
     band_ratio = verdict_mod.compute_band_ratio_db(avg_db, frequencies)
