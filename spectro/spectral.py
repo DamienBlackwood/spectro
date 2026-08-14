@@ -299,7 +299,12 @@ def analyze_transcode_evidence(data: np.ndarray, sr: int) -> SpectralAnalysisRes
     max_slope = verdict_mod.steepest_slope_db_per_khz(avg_db, frequencies, T.cutoff_search_start_hz, slope_hi)
 
     best_drop_freq, max_drop = strongest_drop(avg_db, frequencies, nyquist)
-    hard_cutoff = max_drop > T.hard_cutoff_drop_db
+    # a shallow drop still counts if the wall beside it is vertical, analog masters have little up there that a brick wall only costs 6-9 dB
+    hard_cutoff = bool(
+        max_drop > T.hard_cutoff_drop_db
+        or (max_drop > T.soft_cutoff_drop_db
+            and max_slope <= -T.hard_cutoff_slope_db_per_khz)
+    )
     shelf_type = verdict_mod.shelf_type_from_slope(max_slope, max_drop)
     cutoff_freq = best_drop_freq if shelf_type != 'none' else float(nyquist)
 

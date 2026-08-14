@@ -32,6 +32,9 @@ class Thresholds:
     drop_search_local_threshold: float = 10.0
 
     hard_cutoff_drop_db: float = 10.0
+    # a shallow drop still counts as a shelf when the wall next to it is steep, quiet top ends (analog masters) never had much to lose in the first place
+    soft_cutoff_drop_db: float = 5.0
+    hard_cutoff_slope_db_per_khz: float = 32.0
     candidate_cutoffs: tuple = tuple(range(13000, 21501, 250))
     cutoff_drop_width_hz: float = 1000.0
     cutoff_persistence_pad_hz: float = 500.0
