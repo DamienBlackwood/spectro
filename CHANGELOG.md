@@ -1,6 +1,6 @@
 # Changelog
 
-# v2.1.0 (and 2.0.0)
+# v2.0.0
 
 Everything below was measured against a corpus of 14 known-lossless tracks spanning 1965 to 2023 and 44.1/48/96/192 kHz, put through eight encoders and decoded back to FLAC. 126 files.
 
