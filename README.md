@@ -86,7 +86,9 @@ python tests/make_corpus.py ~/Music/*.flac
 
 It encodes each file at a spread of bitrates in a temp dir, scores everything, and tells you where it was wrong. If the thresholds are off for your kind of music, that's how you'll find out.
 
-All code written and thought out by me, with only **minor** assistance from AI. But mostly drawn from existing research/examples and implemented independently.
+All code written and thought out by me, with only minor assistance from AI (in formatting or cleanliness). But mostly drawn from existing research/examples and implemented independently.
+
+## Detection
 
 Detection is a weighted score over seven signals: where the spectral edge sits relative to known codec cutoffs, how steep the transition band is, how deep the shelf is, how much the edge wanders across the frames that reach it, the high/low band energy ratio, SBR likelihood, and whether the shelf holds for the whole track. A separate quality score decides whether the file is even judgeable. Every threshold lives in `Thresholds` in [dataclasses_.py](spectro/dataclasses_.py) if you want to argue with one. The codec cutoff ranges in `CODEC_PROFILES` were measured with ffmpeg apart from HE-AAC, which is still a published estimate.
 
